@@ -5,130 +5,313 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/zhz8888/pikpakapi-go/internal/client"
+	"github.com/zhz8888/pikpakapi-go/pkg/enums"
 )
 
-// printJSON 是一个辅助函数，用于将数据格式化为易读的JSON字符串输出
-// 参数:
-//   - data: interface{} - 需要格式化的任意数据类型
-//
-// 该函数使用json.MarshalIndent进行格式化，以缩进的方式打印JSON，
-// 便于调试和查看API返回的详细数据结构
 func printJSON(data interface{}) {
 	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		// 格式化失败时记录错误但不中断程序
 		log.Printf("Failed to marshal data: %v", err)
 		return
 	}
 	fmt.Println(string(jsonData))
 }
 
-// main 程序的主入口函数
-// 该函数演示了PikPak API客户端的完整使用流程：
-// 1. 登录认证
-// 2. 获取用户信息
-// 3. 查询配额信息
-// 4. 列出离线下载任务
-// 5. 列出云端文件
-// 6. 创建离线下载任务
-//
-// 使用前请将username和password替换为真实的PikPak账号信息
 func main() {
-	// 创建上下文，用于控制请求的超时和取消
 	ctx := context.Background()
 
-	// 初始化PikPak客户端
-	// WithUsername: 设置用户名，支持邮箱、手机号或用户名
-	// WithPassword: 设置密码
-	// WithMaxRetries: 设置最大重试次数，默认为3次
-	// WithTokenRefreshCallback: 设置令牌刷新时的回调函数
 	cli := client.NewClient(
 		client.WithUsername("your_username"),
 		client.WithPassword("your_password"),
 		client.WithMaxRetries(3),
 		client.WithTokenRefreshCallback(func(c *client.Client) {
-			// 令牌刷新成功后的回调函数
-			// 可在此处保存新的令牌信息到配置文件或数据库
 			log.Println("Token refreshed successfully!")
 		}),
 	)
 
-	fmt.Println("=== Logging in... ===")
-	// 执行登录操作
-	// 登录过程包含：
-	// 1. 初始化验证码挑战（Captcha Init）
-	// 2. 获取验证码令牌（Captcha Token）
-	// 3. 提交登录凭证
-	// 4. 获取访问令牌（Access Token）和刷新令牌（Refresh Token）
+	fmt.Println("=== 登录认证 ===")
 	if err := cli.Login(ctx); err != nil {
-		log.Fatalf("Login failed: %v", err)
+		log.Fatalf("登录失败: %v", err)
 	}
-	fmt.Println("Login successful!")
+	fmt.Println("登录成功!")
 
-	// 获取并展示用户信息
-	// 返回的信息包括：用户名、用户ID、访问令牌、刷新令牌、编码令牌
-	fmt.Println("\n=== User Info ===")
+	fmt.Println("\n=== 用户信息 ===")
 	userInfo := cli.GetUserInfo()
 	printJSON(userInfo)
 
-	// 获取账户配额信息
-	// 返回云盘容量使用情况，包括：
-	// - total_storage: 总存储空间
-	// - used_storage: 已使用空间
-	// - subscription_plan: 订阅计划信息
-	fmt.Println("\n=== Quota Info ===")
+	fmt.Println("\n=== 账户配额 ===")
 	quota, err := cli.GetQuotaInfo(ctx)
 	if err != nil {
-		log.Printf("Failed to get quota info: %v", err)
+		log.Printf("获取配额失败: %v", err)
 	} else {
 		printJSON(quota)
 	}
 
-	// 获取离线下载任务列表
-	// 参数说明：
-	// - 10: 每次请求返回的最大任务数量
-	// - "": 页码令牌，首次请求传空字符串
-	// - nil: 任务状态筛选器，nil表示默认筛选运行中和失败的任务
-	// 支持的筛选状态：PHASE_TYPE_RUNNING, PHASE_TYPE_ERROR, PHASE_TYPE_COMPLETE, PHASE_TYPE_PENDING
-	fmt.Println("\n=== Offline List ===")
-	tasks, err := cli.OfflineList(ctx, 10, "", nil)
+	fmt.Println("\n=== 存储详情 ===")
+	storage, err := cli.GetStorageInfo(ctx)
 	if err != nil {
-		log.Printf("Failed to get offline list: %v", err)
+		log.Printf("获取存储信息失败: %v", err)
 	} else {
-		printJSON(tasks)
+		fmt.Printf("总空间: %.2f GB\n", float64(storage.TotalBytes)/(1024*1024*1024))
+		fmt.Printf("已用空间: %.2f GB\n", float64(storage.UsedBytes)/(1024*1024*1024))
+		fmt.Printf("无限容量: %v\n", storage.IsUnlimited)
 	}
 
-	// 获取云端文件列表
-	// 参数说明：
-	// - 20: 每次请求返回的最大文件数量
-	// - "": 父文件夹ID，空字符串表示根目录
-	// - "": 页码令牌，首次请求传空字符串
-	fmt.Println("\n=== File List ===")
-	files, err := cli.FileList(ctx, 20, "", "")
+	fmt.Println("\n=== 文件列表 ===")
+	files, err := cli.FileList(ctx, 20, "", "", "")
 	if err != nil {
-		log.Printf("Failed to get file list: %v", err)
+		log.Printf("获取文件列表失败: %v", err)
 	} else {
 		printJSON(files)
 	}
 
-	// 创建离线下载任务
-	// 支持多种下载方式：
-	// - HTTP/HTTPS链接直接下载
-	// - 磁力链接（Magnet URI）
-	// - BT种子文件
-	// 参数说明：
-	// - "magnet:?xt=urn:btih:...": 磁力链接
-	// - "": 父文件夹ID，空字符串默认保存到"我的数据包"
-	// - "Test Download": 自定义文件名，不传则自动从链接中提取
-	fmt.Println("\n=== Offline Download (Magnet) ===")
-	result, err := cli.OfflineDownload(ctx, "magnet:?xt=urn:btih:42b46b971332e776e8b290ed34632d5c81a1c47c", "", "Test Download")
+	fmt.Println("\n=== 创建文件夹 ===")
+	folder, err := cli.CreateFolder(ctx, "测试文件夹", "")
 	if err != nil {
-		log.Printf("Failed to start offline download: %v", err)
+		log.Printf("创建文件夹失败: %v", err)
 	} else {
-		printJSON(result)
+		printJSON(folder)
 	}
 
-	fmt.Println("\n=== All operations completed successfully! ===")
+	fmt.Println("\n=== 离线任务列表 ===")
+	tasks, err := cli.OfflineList(ctx, 10, "", nil)
+	if err != nil {
+		log.Printf("获取离线任务失败: %v", err)
+	} else {
+		printJSON(tasks)
+	}
+
+	fmt.Println("\n=== 创建离线下载任务 (磁力链接) ===")
+	downloadResult, err := cli.OfflineDownload(ctx, "magnet:?xt=urn:btih:42b46b971332e776e8b290ed34632d5c81a1c47c", "", "测试下载")
+	if err != nil {
+		log.Printf("创建离线下载失败: %v", err)
+	} else {
+		printJSON(downloadResult)
+	}
+
+	fmt.Println("\n=== 创建离线下载任务 (HTTP链接) ===")
+	httpResult, err := cli.OfflineDownload(ctx, "https://example.com/file.zip", "", "HTTP下载测试")
+	if err != nil {
+		log.Printf("创建HTTP下载失败: %v", err)
+	} else {
+		printJSON(httpResult)
+	}
+
+	fmt.Println("\n=== 远程下载任务 ===")
+	remoteResult, err := cli.RemoteDownload(ctx, "https://example.com/file.torrent")
+	if err != nil {
+		log.Printf("创建远程下载失败: %v", err)
+	} else {
+		printJSON(remoteResult)
+	}
+
+	fmt.Println("\n=== 获取任务状态 ===")
+	status, err := cli.GetTaskStatus(ctx, "task_id", "file_id")
+	if err != nil {
+		log.Printf("获取任务状态失败: %v", err)
+	} else {
+		fmt.Printf("任务状态: %s\n", status.String())
+		switch status {
+		case enums.DownloadStatusNotDownloading:
+			fmt.Println("任务正在等待处理")
+		case enums.DownloadStatusDownloading:
+			fmt.Println("任务正在下载中")
+		case enums.DownloadStatusDone:
+			fmt.Println("任务已完成")
+		case enums.DownloadStatusError:
+			fmt.Println("任务下载失败")
+		}
+	}
+
+	fmt.Println("\n=== 重试失败任务 ===")
+	retryResult, err := cli.OfflineTaskRetry(ctx, "task_id")
+	if err != nil {
+		log.Printf("重试任务失败: %v", err)
+	} else {
+		printJSON(retryResult)
+	}
+
+	fmt.Println("\n=== 文件操作演示 ===")
+
+	fileID := "your_file_id"
+	newFileID := "your_new_file_id"
+
+	fmt.Println("\n--- 重命名文件 ---")
+	renameResult, err := cli.FileRename(ctx, fileID, "新文件名")
+	if err != nil {
+		log.Printf("重命名失败: %v", err)
+	} else {
+		printJSON(renameResult)
+	}
+
+	fmt.Println("\n--- 移动文件 ---")
+	if err = cli.Move(ctx, fileID, "parent_folder_id"); err != nil {
+		log.Printf("移动文件失败: %v", err)
+	} else {
+		fmt.Println("文件移动成功")
+	}
+
+	fmt.Println("\n--- 复制文件 ---")
+	if err = cli.Copy(ctx, fileID, "target_folder_id"); err != nil {
+		log.Printf("复制文件失败: %v", err)
+	} else {
+		fmt.Println("文件复制成功")
+	}
+
+	fmt.Println("\n--- 收藏文件 ---")
+	starResult, err := cli.FileBatchStar(ctx, []string{fileID})
+	if err != nil {
+		log.Printf("收藏文件失败: %v", err)
+	} else {
+		printJSON(starResult)
+	}
+
+	fmt.Println("\n--- 收藏列表 ---")
+	starList, err := cli.FileStarList(ctx)
+	if err != nil {
+		log.Printf("获取收藏列表失败: %v", err)
+	} else {
+		printJSON(starList)
+	}
+
+	fmt.Println("\n--- 取消收藏 ---")
+	unstarResult, err := cli.FileBatchUnstar(ctx, []string{fileID})
+	if err != nil {
+		log.Printf("取消收藏失败: %v", err)
+	} else {
+		printJSON(unstarResult)
+	}
+
+	fmt.Println("\n--- 获取文件下载链接 ---")
+	downloadURL, err := cli.GetFileLink(ctx, fileID)
+	if err != nil {
+		log.Printf("获取下载链接失败: %v", err)
+	} else {
+		fmt.Printf("下载链接: %s\n", downloadURL)
+	}
+
+	fmt.Println("\n--- 上传文件 (本地路径) ---")
+	uploadResult, err := cli.Upload(ctx, "/path/to/local/file.txt", "", "上传的文件.txt")
+	if err != nil {
+		log.Printf("上传文件失败: %v", err)
+	} else {
+		printJSON(uploadResult)
+	}
+
+	fmt.Println("\n--- 上传文件 (流式) ---")
+	file, err := os.Open("/path/to/local/file.txt")
+	if err != nil {
+		log.Printf("打开文件失败: %v", err)
+	} else {
+		uploadReaderResult, uploadErr := cli.UploadReader(ctx, file, "流式上传.txt", "")
+		if uploadErr != nil {
+			log.Printf("流式上传失败: %v", uploadErr)
+		} else {
+			printJSON(uploadReaderResult)
+		}
+		file.Close()
+	}
+
+	fmt.Println("\n--- 文件变更事件 ---")
+	events, err := cli.Events(ctx, 50, "")
+	if err != nil {
+		log.Printf("获取事件失败: %v", err)
+	} else {
+		printJSON(events)
+	}
+
+	fmt.Println("\n--- 移动到回收站 ---")
+	trashResult, err := cli.DeleteToTrash(ctx, []string{fileID})
+	if err != nil {
+		log.Printf("移动到回收站失败: %v", err)
+	} else {
+		printJSON(trashResult)
+	}
+
+	fmt.Println("\n--- 从回收站恢复 ---")
+	untrashResult, err := cli.Untrash(ctx, []string{newFileID})
+	if err != nil {
+		log.Printf("恢复文件失败: %v", err)
+	} else {
+		printJSON(untrashResult)
+	}
+
+	fmt.Println("\n--- 永久删除 ---")
+	deleteResult, err := cli.DeleteForever(ctx, []string{fileID})
+	if err != nil {
+		log.Printf("永久删除失败: %v", err)
+	} else {
+		printJSON(deleteResult)
+	}
+
+	fmt.Println("\n=== 分享功能演示 ===")
+
+	fmt.Println("\n--- 创建分享链接 ---")
+	shareResult, err := cli.CreateShareLink(ctx, fileID, false)
+	if err != nil {
+		log.Printf("创建分享链接失败: %v", err)
+	} else {
+		printJSON(shareResult)
+	}
+
+	fmt.Println("\n--- 批量分享文件 ---")
+	batchShareResult, err := cli.FileBatchShare(ctx, []string{fileID, newFileID}, false)
+	if err != nil {
+		log.Printf("批量分享失败: %v", err)
+	} else {
+		printJSON(batchShareResult)
+	}
+
+	fmt.Println("\n--- 获取分享信息 ---")
+	shareInfo, err := cli.GetShareInfo(ctx, "https://www.mypikpak.com/s/xxxxxx")
+	if err != nil {
+		log.Printf("获取分享信息失败: %v", err)
+	} else {
+		printJSON(shareInfo)
+	}
+
+	fmt.Println("\n--- 获取分享文件下载链接 ---")
+	shareDownloadURL, err := cli.GetShareDownloadURL(ctx, "https://www.mypikpak.com/s/xxxxxx", fileID)
+	if err != nil {
+		log.Printf("获取分享下载链接失败: %v", err)
+	} else {
+		fmt.Printf("分享下载链接: %s\n", shareDownloadURL)
+	}
+
+	fmt.Println("\n--- 恢复分享文件 ---")
+	restoreResult, err := cli.Restore(ctx, "share_id", "pass_code_token", []string{fileID})
+	if err != nil {
+		log.Printf("恢复分享文件失败: %v", err)
+	} else {
+		printJSON(restoreResult)
+	}
+
+	fmt.Println("\n=== 令牌管理演示 ===")
+
+	fmt.Println("\n--- 编码令牌 (保存到配置文件) ---")
+	if err := cli.EncodeToken(); err != nil {
+		log.Printf("编码令牌失败: %v", err)
+	} else {
+		fmt.Printf("编码后的令牌: %s\n", cli.GetEncodedToken())
+	}
+
+	fmt.Println("\n--- 解码令牌 (从配置文件恢复) ---")
+	cli.SetEncodedToken("your_saved_token")
+	if err := cli.DecodeToken(); err != nil {
+		log.Printf("解码令牌失败: %v", err)
+	} else {
+		fmt.Println("令牌解码成功")
+	}
+
+	fmt.Println("\n--- 刷新访问令牌 ---")
+	if err := cli.RefreshAccessToken(ctx); err != nil {
+		log.Printf("刷新令牌失败: %v", err)
+	} else {
+		fmt.Println("令牌刷新成功")
+	}
+
+	fmt.Println("\n=== 所有操作完成 ===")
 }
