@@ -205,8 +205,9 @@ deleted, err := cli.DeleteForever(ctx, []string{"file_id"})
 ### 上传文件（本地路径）
 
 ```go
-uploaded, err := cli.Upload(ctx, "/path/to/file.txt", "", "file.txt")
-// 参数: filePath, parentID, fileName
+uploaded, err := cli.Upload(ctx, "/path/to/file.txt", "")
+// 参数: filePath, parentID(空为根目录)
+// 文件名将自动从路径中提取
 ```
 
 ### 上传文件（流式）
@@ -214,7 +215,9 @@ uploaded, err := cli.Upload(ctx, "/path/to/file.txt", "", "file.txt")
 ```go
 file, err := os.Open("/path/to/file.txt")
 defer file.Close()
-uploaded, err := cli.UploadReader(ctx, file, "file.txt", "")
+fileInfo, _ := file.Stat()
+uploaded, err := cli.UploadReader(ctx, file, "file.txt", fileInfo.Size(), "")
+// 参数: reader, fileName, fileSize, parentID
 ```
 
 ### 获取文件变更事件
@@ -317,8 +320,8 @@ err := cli.DeleteOfflineTasks(ctx, []string{taskID}, deleteFiles)
 ### 创建分享链接
 
 ```go
-share, err := cli.CreateShareLink(ctx, "file_id", false)
-// 参数: fileID, needPassword(是否需要提取码)
+share, err := cli.CreateShareLink(ctx, "file_id", 86400, "")
+// 参数: fileID, expireSec(过期秒数，默认86400), passCode(提取码)
 ```
 
 ### 批量分享文件
