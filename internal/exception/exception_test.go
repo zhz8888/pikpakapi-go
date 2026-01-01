@@ -6,22 +6,22 @@ import (
 )
 
 func TestPikpakException(t *testing.T) {
-	e := NewPikpakException("test error")
-	if e.Error() != "test error" {
-		t.Errorf("Expected 'test error', got '%s'", e.Error())
+	e := NewPikpakExceptionWithMessage(ErrCodeUnknownError, "test error")
+	if e.Error() != "[1006] test error" {
+		t.Errorf("Expected '[1006] test error', got '%s'", e.Error())
 	}
 }
 
 func TestPikpakExceptionWithError(t *testing.T) {
 	originalErr := errors.New("original error")
-	e := NewPikpakExceptionWithError("wrapped error", originalErr)
-	if e.Error() != "wrapped error: original error" {
-		t.Errorf("Expected 'wrapped error: original error', got '%s'", e.Error())
+	e := NewPikpakExceptionWithError(ErrCodeUnknownError, originalErr)
+	if e.Error() != "[1006] unknown error: original error" {
+		t.Errorf("Expected '[1006] unknown error: original error', got '%s'", e.Error())
 	}
 }
 
 func TestIsPikpakException(t *testing.T) {
-	e := NewPikpakException("test")
+	e := NewPikpakExceptionWithMessage(ErrCodeUnknownError, "test")
 	if !IsPikpakException(e) {
 		t.Error("Expected IsPikpakException to return true")
 	}
@@ -38,9 +38,9 @@ func TestErrorVariables(t *testing.T) {
 		err      error
 		expected string
 	}{
-		{"InvalidUsernamePassword", ErrInvalidUsernamePassword, "invalid username or password"},
-		{"InvalidEncodedToken", ErrInvalidEncodedToken, "invalid encoded token"},
-		{"CaptchaTokenFailed", ErrCaptchaTokenFailed, "captcha_token get failed"},
+		{"InvalidUsernamePassword", ErrInvalidUsernamePassword, "[1001] invalid username or password"},
+		{"InvalidEncodedToken", ErrInvalidEncodedToken, "[1002] invalid encoded token"},
+		{"CaptchaTokenFailed", ErrCaptchaTokenFailed, "[1003] captcha token get failed"},
 	}
 
 	for _, tt := range tests {

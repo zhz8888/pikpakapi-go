@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -37,8 +38,8 @@ func TestNewClient_WithDeviceID(t *testing.T) {
 		WithDeviceID("custom_device_id"),
 	)
 
-	if cli.deviceID != "custom_device_id" {
-		t.Errorf("Expected deviceID 'custom_device_id', got '%s'", cli.deviceID)
+	if cli.GetDeviceID() != "custom_device_id" {
+		t.Errorf("Expected deviceID 'custom_device_id', got '%s'", cli.GetDeviceID())
 	}
 }
 
@@ -48,7 +49,7 @@ func TestNewClient_DefaultDeviceID(t *testing.T) {
 		WithPassword("test_pass"),
 	)
 
-	if cli.deviceID == "" {
+	if cli.GetDeviceID() == "" {
 		t.Error("Expected deviceID to be generated")
 	}
 }
@@ -59,10 +60,10 @@ func TestGetUserInfo(t *testing.T) {
 		WithPassword("test_pass"),
 	)
 
-	cli.accessToken = "test_access"
-	cli.refreshToken = "test_refresh"
-	cli.userID = "test_user_id"
-	cli.encodedToken = "test_encoded"
+	cli.SetAccessToken("test_access")
+	cli.SetRefreshToken("test_refresh")
+	cli.SetUserID("test_user_id")
+	cli.SetEncodedToken("test_encoded")
 
 	info := cli.GetUserInfo()
 
@@ -222,20 +223,22 @@ func TestGetStorageInfo_EdgeCases(t *testing.T) {
 			response: map[string]interface{}{
 				"some_other_field": "value",
 			},
-			expectError: true,
+			expectError:   false,
+			expectUnlimit: false,
 		},
 		{
 			name: "invalid_quota_format",
 			response: map[string]interface{}{
 				"quota": map[string]interface{}{
 					"limit":          "invalid_number",
-					"usage":          "50000000000",
+					"usage":          "invalid_usage",
 					"usage_in_trash": "1000000000",
 					"is_unlimited":   false,
 					"complimentary":  "basic",
 				},
 			},
-			expectError: true,
+			expectError:   false,
+			expectUnlimit: false,
 		},
 	}
 
@@ -271,16 +274,19 @@ func TestGetStorageInfo_EdgeCases(t *testing.T) {
 				t.Fatalf("Expected no error, got %v", err)
 			}
 
-			if resp == nil {
-				t.Fatal("Expected StorageInfo response, got nil")
-			}
-
 			if tt.expectUnlimit {
 				if !resp.IsUnlimited {
 					t.Error("Expected IsUnlimited to be true")
 				}
 				if resp.TotalBytes != 0 {
 					t.Errorf("Expected TotalBytes 0 for unlimited storage, got %d", resp.TotalBytes)
+				}
+			} else if tt.name == "missing_quota" || tt.name == "invalid_quota_format" {
+				if resp.TotalBytes != 0 {
+					t.Errorf("Expected TotalBytes 0 for %s, got %d", tt.name, resp.TotalBytes)
+				}
+				if resp.UsedBytes != 0 {
+					t.Errorf("Expected UsedBytes 0 for %s, got %d", tt.name, resp.UsedBytes)
 				}
 			} else {
 				if resp.TotalBytes != 100000000000 {
@@ -620,7 +626,7 @@ func TestPatchJSON_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.patchJSON(context.Background(), server.URL+"/drive/v1/files/test_file_id", map[string]interface{}{"name": "updated_name"})
+	result, err := cli.PatchJSON(context.Background(), server.URL+"/drive/v1/files/test_file_id", map[string]interface{}{"name": "updated_name"})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -734,55 +740,80 @@ func TestCreateFolder_EmptyName(t *testing.T) {
 }
 
 func TestCreateFile_Success(t *testing.T) {
+	uploadServerURL := ""
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("Expected POST method, got %s", r.Method)
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/drive/v1/files/upload/url") {
+			if r.URL.Query().Get("name") != "test_file.txt" {
+				t.Errorf("Expected name 'test_file.txt', got '%s'", r.URL.Query().Get("name"))
+			}
+
+			response := map[string]interface{}{
+				"upload_url": uploadServerURL,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
 		}
 
-		expectedPath := "/drive/v1/files"
-		if r.URL.Path != expectedPath {
-			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		if r.Method == http.MethodPost && r.URL.Path == "/upload" {
+			contentType := r.Header.Get("Content-Type")
+			if !strings.HasPrefix(contentType, "multipart/form-data") {
+				t.Errorf("Expected multipart/form-data content type, got '%s'", contentType)
+			}
+
+			mr := multipart.NewReader(r.Body, contentType[len("multipart/form-data; boundary="):])
+			form, err := mr.ReadForm(10 * 1024 * 1024)
+			if err != nil {
+				t.Fatalf("Failed to read multipart form: %v", err)
+			}
+
+			if form.Value["name"] == nil || form.Value["name"][0] != "test_file.txt" {
+				t.Errorf("Expected name 'test_file.txt', got '%v'", form.Value["name"])
+			}
+
+			if form.Value["kind"] == nil || form.Value["kind"][0] != "drive#file" {
+				t.Errorf("Expected kind 'drive#file', got '%v'", form.Value["kind"])
+			}
+
+			if form.File["file"] == nil {
+				t.Error("Expected file field in form")
+			}
+
+			response := map[string]interface{}{
+				"id":          "upload_token_id",
+				"upload_type": "UPLOAD_TYPE_RESUMABLE",
+				"resumable": map[string]interface{}{
+					"endpoint": "https://upload.example.com/upload",
+				},
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
 		}
 
-		contentType := r.Header.Get("Content-Type")
-		if !strings.HasPrefix(contentType, "multipart/form-data") {
-			t.Errorf("Expected multipart/form-data content type, got '%s'", contentType)
-		}
-
-		mr := multipart.NewReader(r.Body, contentType[len("multipart/form-data; boundary="):])
-		form, err := mr.ReadForm(10 * 1024 * 1024)
-		if err != nil {
-			t.Fatalf("Failed to read multipart form: %v", err)
-		}
-
-		if form.Value["name"] == nil || form.Value["name"][0] != "test_file.txt" {
-			t.Errorf("Expected name 'test_file.txt', got '%v'", form.Value["name"])
-		}
-
-		if form.Value["kind"] == nil || form.Value["kind"][0] != "drive#file" {
-			t.Errorf("Expected kind 'drive#file', got '%v'", form.Value["kind"])
-		}
-
-		if form.File["file"] == nil {
-			t.Error("Expected file field in form")
-		}
-
-		response := map[string]interface{}{
-			"id":          "upload_token_id",
-			"upload_type": "UPLOAD_TYPE_RESUMABLE",
-			"resumable": map[string]interface{}{
-				"endpoint": "https://upload.example.com/upload",
-			},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		t.Errorf("Unexpected request: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
+	uploadServerURL = server.URL + "/upload"
+
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.UploadReader(context.Background(), strings.NewReader("test content"), "test_file.txt", "")
+	tmpFile, err := os.CreateTemp("", "test_*.txt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString("test content"); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	defer tmpFile.Close()
+
+	result, err := cli.UploadReader(context.Background(), tmpFile, "test_file.txt", int64(len("test content")), "")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -797,38 +828,72 @@ func TestCreateFile_Success(t *testing.T) {
 }
 
 func TestCreateFile_WithParent(t *testing.T) {
+	uploadServerURL := ""
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("Expected POST method, got %s", r.Method)
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/drive/v1/files/upload/url") {
+			if r.URL.Query().Get("name") != "test_file.txt" {
+				t.Errorf("Expected name 'test_file.txt', got '%s'", r.URL.Query().Get("name"))
+			}
+
+			if r.URL.Query().Get("parent_id") != "parent_id_value" {
+				t.Errorf("Expected parent_id 'parent_id_value', got '%s'", r.URL.Query().Get("parent_id"))
+			}
+
+			response := map[string]interface{}{
+				"upload_url": uploadServerURL,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
 		}
 
-		contentType := r.Header.Get("Content-Type")
-		if !strings.HasPrefix(contentType, "multipart/form-data") {
-			t.Errorf("Expected multipart/form-data content type, got '%s'", contentType)
+		if r.Method == http.MethodPost && r.URL.Path == "/upload" {
+			contentType := r.Header.Get("Content-Type")
+			if !strings.HasPrefix(contentType, "multipart/form-data") {
+				t.Errorf("Expected multipart/form-data content type, got '%s'", contentType)
+			}
+
+			mr := multipart.NewReader(r.Body, contentType[len("multipart/form-data; boundary="):])
+			form, err := mr.ReadForm(10 * 1024 * 1024)
+			if err != nil {
+				t.Fatalf("Failed to read multipart form: %v", err)
+			}
+
+			if form.Value["parent_id"] == nil || form.Value["parent_id"][0] != "parent_id_value" {
+				t.Errorf("Expected parent_id 'parent_id_value', got '%v'", form.Value["parent_id"])
+			}
+
+			response := map[string]interface{}{
+				"id": "upload_token_id",
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
 		}
 
-		mr := multipart.NewReader(r.Body, contentType[len("multipart/form-data; boundary="):])
-		form, err := mr.ReadForm(10 * 1024 * 1024)
-		if err != nil {
-			t.Fatalf("Failed to read multipart form: %v", err)
-		}
-
-		if form.Value["parent_id"] == nil || form.Value["parent_id"][0] != "parent_id_value" {
-			t.Errorf("Expected parent_id 'parent_id_value', got '%v'", form.Value["parent_id"])
-		}
-
-		response := map[string]interface{}{
-			"id": "upload_token_id",
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		t.Errorf("Unexpected request: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
+	uploadServerURL = server.URL + "/upload"
+
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.UploadReader(context.Background(), strings.NewReader("test content"), "test_file.txt", "parent_id_value")
+	tmpFile, err := os.CreateTemp("", "test_*.txt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString("test content"); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	defer tmpFile.Close()
+
+	result, err := cli.UploadReader(context.Background(), tmpFile, "test_file.txt", int64(len("test content")), "parent_id_value")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -1016,7 +1081,7 @@ func TestGetFileInfo_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.getJSON(context.Background(), server.URL+"/drive/v1/files/test_file_id", nil)
+	result, err := cli.GetJSON(context.Background(), server.URL+"/drive/v1/files/test_file_id", nil)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -1038,7 +1103,7 @@ func TestGetFileInfo_NotFound(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	_, err := cli.getJSON(context.Background(), server.URL+"/drive/v1/files/nonexistent_id", nil)
+	_, err := cli.GetJSON(context.Background(), server.URL+"/drive/v1/files/nonexistent_id", nil)
 	if err == nil {
 		t.Error("Expected error for non-existent file")
 	}
@@ -1126,7 +1191,7 @@ func TestSort_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	_, err := cli.patchJSON(context.Background(), server.URL+"/drive/v1/files:sort", map[string]interface{}{
+	_, err := cli.PatchJSON(context.Background(), server.URL+"/drive/v1/files:sort", map[string]interface{}{
 		"id":        "test_folder_id",
 		"sort_name": "FILES_TYPE_THUMBNAIL",
 	})
@@ -1143,7 +1208,7 @@ func TestSort_InvalidFolderID(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	_, err := cli.patchJSON(context.Background(), server.URL+"/drive/v1/files:sort", map[string]interface{}{
+	_, err := cli.PatchJSON(context.Background(), server.URL+"/drive/v1/files:sort", map[string]interface{}{
 		"id":        "",
 		"sort_name": "FILES_TYPE_THUMBNAIL",
 	})
@@ -1322,8 +1387,8 @@ func TestDeleteDownloadTask_EmptyTaskID(t *testing.T) {
 func TestWithAccessToken(t *testing.T) {
 	cli := NewClient(WithAccessToken("test_access_token"))
 
-	if cli.accessToken != "test_access_token" {
-		t.Errorf("Expected accessToken 'test_access_token', got '%s'", cli.accessToken)
+	if cli.GetAccessToken() != "test_access_token" {
+		t.Errorf("Expected accessToken 'test_access_token', got '%s'", cli.GetAccessToken())
 	}
 }
 
@@ -1374,7 +1439,7 @@ func TestGetSortOptions_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.getJSON(context.Background(), server.URL+"/drive/v1/sort_options", nil)
+	result, err := cli.GetJSON(context.Background(), server.URL+"/drive/v1/sort_options", nil)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -1406,7 +1471,7 @@ func TestGetSortOptions_Empty(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.getJSON(context.Background(), server.URL+"/drive/v1/sort_options", nil)
+	result, err := cli.GetJSON(context.Background(), server.URL+"/drive/v1/sort_options", nil)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -1549,14 +1614,14 @@ func TestWithAllOptions(t *testing.T) {
 	if cli.password != "secure_password" {
 		t.Errorf("Expected password 'secure_password', got '%s'", cli.password)
 	}
-	if cli.deviceID != "unique_device_id" {
-		t.Errorf("Expected deviceID 'unique_device_id', got '%s'", cli.deviceID)
+	if cli.GetDeviceID() != "unique_device_id" {
+		t.Errorf("Expected deviceID 'unique_device_id', got '%s'", cli.GetDeviceID())
 	}
-	if cli.accessToken != "access_token_value" {
-		t.Errorf("Expected accessToken 'access_token_value', got '%s'", cli.accessToken)
+	if cli.GetAccessToken() != "access_token_value" {
+		t.Errorf("Expected accessToken 'access_token_value', got '%s'", cli.GetAccessToken())
 	}
-	if cli.refreshToken != "refresh_token_value" {
-		t.Errorf("Expected refreshToken 'refresh_token_value', got '%s'", cli.refreshToken)
+	if cli.GetRefreshToken() != "refresh_token_value" {
+		t.Errorf("Expected refreshToken 'refresh_token_value', got '%s'", cli.GetRefreshToken())
 	}
 	if cli.baseURL != "https://api.custom.com" {
 		t.Errorf("Expected baseURL 'https://api.custom.com', got '%s'", cli.baseURL)
@@ -1715,21 +1780,21 @@ func TestDownloadStatus_Check(t *testing.T) {
 
 func TestEncodeToken_Success(t *testing.T) {
 	cli := NewClient()
-	cli.accessToken = "test_access_token"
-	cli.refreshToken = "test_refresh_token"
+	cli.SetAccessToken("test_access_token")
+	cli.SetRefreshToken("test_refresh_token")
 
 	err := cli.EncodeToken()
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
 
-	if cli.encodedToken == "" {
+	if cli.GetEncodedToken() == "" {
 		t.Error("Expected encodedToken to be set")
 	}
 
 	expected := "eyJhY2Nlc3NfdG9rZW4iOiJ0ZXN0X2FjY2Vzc190b2tlbiIsInJlZnJlc2hfdG9rZW4iOiJ0ZXN0X3JlZnJlc2hfdG9rZW4ifQ=="
-	if cli.encodedToken != expected {
-		t.Errorf("Expected encodedToken '%s', got '%s'", expected, cli.encodedToken)
+	if cli.GetEncodedToken() != expected {
+		t.Errorf("Expected encodedToken '%s', got '%s'", expected, cli.GetEncodedToken())
 	}
 }
 
@@ -1742,26 +1807,26 @@ func TestEncodeToken_EmptyTokens(t *testing.T) {
 	}
 
 	expected := "eyJhY2Nlc3NfdG9rZW4iOiIiLCJyZWZyZXNoX3Rva2VuIjoiIn0="
-	if cli.encodedToken != expected {
-		t.Errorf("Expected encodedToken '%s', got '%s'", expected, cli.encodedToken)
+	if cli.GetEncodedToken() != expected {
+		t.Errorf("Expected encodedToken '%s', got '%s'", expected, cli.GetEncodedToken())
 	}
 }
 
 func TestDecodeToken_Success(t *testing.T) {
 	cli := NewClient()
-	cli.encodedToken = "eyJhY2Nlc3NfdG9rZW4iOiJ0ZXN0X2FjY2Vzc190b2tlbiIsInJlZnJlc2hfdG9rZW4iOiJ0ZXN0X3JlZnJlc2hfdG9rZW4ifQ=="
+	cli.SetEncodedToken("eyJhY2Nlc3NfdG9rZW4iOiJ0ZXN0X2FjY2Vzc190b2tlbiIsInJlZnJlc2hfdG9rZW4iOiJ0ZXN0X3JlZnJlc2hfdG9rZW4ifQ==")
 
 	err := cli.DecodeToken()
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
 
-	if cli.accessToken != "test_access_token" {
-		t.Errorf("Expected accessToken 'test_access_token', got '%s'", cli.accessToken)
+	if cli.GetAccessToken() != "test_access_token" {
+		t.Errorf("Expected accessToken 'test_access_token', got '%s'", cli.GetAccessToken())
 	}
 
-	if cli.refreshToken != "test_refresh_token" {
-		t.Errorf("Expected refreshToken 'test_refresh_token', got '%s'", cli.refreshToken)
+	if cli.GetRefreshToken() != "test_refresh_token" {
+		t.Errorf("Expected refreshToken 'test_refresh_token', got '%s'", cli.GetRefreshToken())
 	}
 }
 
@@ -1776,7 +1841,7 @@ func TestDecodeToken_EmptyToken(t *testing.T) {
 
 func TestDecodeToken_InvalidToken(t *testing.T) {
 	cli := NewClient()
-	cli.encodedToken = "invalid_base64_token!!!"
+	cli.SetEncodedToken("invalid_base64_token!!!")
 
 	err := cli.DecodeToken()
 	if err == nil {
@@ -1786,7 +1851,7 @@ func TestDecodeToken_InvalidToken(t *testing.T) {
 
 func TestGetEncodedToken(t *testing.T) {
 	cli := NewClient()
-	cli.encodedToken = "test_encoded_token"
+	cli.SetEncodedToken("test_encoded_token")
 
 	token := cli.GetEncodedToken()
 	if token != "test_encoded_token" {
@@ -1798,8 +1863,8 @@ func TestSetEncodedToken(t *testing.T) {
 	cli := NewClient()
 
 	cli.SetEncodedToken("new_encoded_token")
-	if cli.encodedToken != "new_encoded_token" {
-		t.Errorf("Expected 'new_encoded_token', got '%s'", cli.encodedToken)
+	if cli.GetEncodedToken() != "new_encoded_token" {
+		t.Errorf("Expected 'new_encoded_token', got '%s'", cli.GetEncodedToken())
 	}
 }
 
@@ -2073,14 +2138,14 @@ func TestGetTaskStatus_Success(t *testing.T) {
 			t.Errorf("Expected GET method, got %s", r.Method)
 		}
 
-		expectedPath := "/drive/v1/files/"
+		expectedPath := "/drive/v1/files/file_456"
 		if r.URL.Path != expectedPath {
 			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
 		}
 
 		response := map[string]interface{}{
 			"task_id": "task_123",
-			"status":  "not_found",
+			"phase":   "PHASE_TYPE_NOT_FOUND",
 			"file_id": "file_456",
 		}
 
@@ -2091,7 +2156,7 @@ func TestGetTaskStatus_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	status, err := cli.GetTaskStatus(context.Background(), "task_123", "")
+	status, err := cli.GetTaskStatus(context.Background(), "task_123", "file_456")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -2131,13 +2196,9 @@ func TestFileBatchStar_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.FileBatchStar(context.Background(), []string{"file_id"})
+	err := cli.FileBatchStar(context.Background(), []string{"file_id"}, true)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("Expected result to be non-nil")
 	}
 }
 
@@ -2147,7 +2208,7 @@ func TestFileBatchUnstar_Success(t *testing.T) {
 			t.Errorf("Expected POST method, got %s", r.Method)
 		}
 
-		expectedPath := "/drive/v1/files:batchUntrash"
+		expectedPath := "/drive/v1/files:batchStar"
 		if r.URL.Path != expectedPath {
 			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
 		}
@@ -2158,6 +2219,11 @@ func TestFileBatchUnstar_Success(t *testing.T) {
 		ids, ok := body["ids"].([]interface{})
 		if !ok || len(ids) != 1 {
 			t.Error("Expected ids to contain 1 item")
+		}
+
+		star, ok := body["star"].(bool)
+		if !ok || star != false {
+			t.Error("Expected star to be false")
 		}
 
 		response := map[string]interface{}{
@@ -2171,13 +2237,9 @@ func TestFileBatchUnstar_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.FileBatchUnstar(context.Background(), []string{"file_id"})
+	err := cli.FileBatchUnstar(context.Background(), []string{"file_id"})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("Expected result to be non-nil")
 	}
 }
 
@@ -2192,8 +2254,8 @@ func TestFileStarList_Success(t *testing.T) {
 			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
 		}
 
-		if r.URL.Query().Get("thumbnail_size") != "SIZE_MEDIUM" {
-			t.Error("Expected thumbnail_size to be 'SIZE_MEDIUM'")
+		if r.URL.Query().Get("thumbnail_size") != "SIZE_LARGE" {
+			t.Error("Expected thumbnail_size to be 'SIZE_LARGE'")
 		}
 
 		response := map[string]interface{}{
@@ -2212,7 +2274,7 @@ func TestFileStarList_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.FileStarList(context.Background())
+	result, err := cli.FileStarList(context.Background(), 20, "")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -2252,13 +2314,9 @@ func TestFileRename_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.FileRename(context.Background(), "file_id", "new_name")
+	err := cli.FileRename(context.Background(), "file_id", "new_name")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("Expected result to be non-nil")
 	}
 }
 
@@ -2305,7 +2363,7 @@ func TestCreateShareLink_Success(t *testing.T) {
 			t.Errorf("Expected POST method, got %s", r.Method)
 		}
 
-		expectedPath := "/drive/v1/files:batchShare"
+		expectedPath := "/drive/v1/share"
 		if r.URL.Path != expectedPath {
 			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
 		}
@@ -2313,9 +2371,12 @@ func TestCreateShareLink_Success(t *testing.T) {
 		var body map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&body)
 
-		ids, ok := body["ids"].([]interface{})
-		if !ok || len(ids) != 1 {
-			t.Error("Expected ids to contain 1 item")
+		if body["file_id"] != "file_123" {
+			t.Errorf("Expected file_id 'file_123', got '%v'", body["file_id"])
+		}
+
+		if body["share_type"] != float64(2) {
+			t.Errorf("Expected share_type 2, got '%v'", body["share_type"])
 		}
 
 		response := map[string]interface{}{
@@ -2333,7 +2394,7 @@ func TestCreateShareLink_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	result, err := cli.CreateShareLink(context.Background(), "file_123", false)
+	result, err := cli.CreateShareLink(context.Background(), "file_123", 86400, "")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -2349,21 +2410,20 @@ func TestGetShareDownloadURL_Success(t *testing.T) {
 			t.Errorf("Expected GET method, got %s", r.Method)
 		}
 
-		expectedPath := "/share/v1/file"
+		expectedPath := "/drive/v1/share/file_info"
 		if r.URL.Path != expectedPath {
 			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
 		}
 
-		if r.URL.Query().Get("share_url") != "https://my.pikpak.com/s/share_123" {
-			t.Error("Expected share_url to be 'https://my.pikpak.com/s/share_123'")
-		}
-
-		if r.URL.Query().Get("file_id") != "file_456" {
-			t.Error("Expected file_id to be 'file_456'")
+		if r.URL.Query().Get("share_id") != "share_123" {
+			t.Error("Expected share_id to be 'share_123'")
 		}
 
 		response := map[string]interface{}{
-			"download_url": "https://download.example.com/file",
+			"file_info": map[string]interface{}{
+				"download_url":     "https://download.example.com/file",
+				"web_content_link": "https://download.example.com/file",
+			},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -2373,7 +2433,7 @@ func TestGetShareDownloadURL_Success(t *testing.T) {
 
 	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
 
-	url, err := cli.GetShareDownloadURL(context.Background(), "https://my.pikpak.com/s/share_123", "file_456")
+	url, err := cli.GetShareDownloadURL(context.Background(), "https://my.pikpak.com/share/link/share_123", "")
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}

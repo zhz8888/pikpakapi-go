@@ -127,11 +127,11 @@ func main() {
 	}
 
 	fmt.Println("\n=== 重试失败任务 ===")
-	retryResult, err := cli.OfflineTaskRetry(ctx, "task_id")
+	err = cli.OfflineTaskRetry(ctx, "task_id")
 	if err != nil {
 		log.Printf("重试任务失败: %v", err)
 	} else {
-		printJSON(retryResult)
+		fmt.Println("任务重试成功")
 	}
 
 	fmt.Println("\n=== 文件操作演示 ===")
@@ -140,11 +140,11 @@ func main() {
 	newFileID := "your_new_file_id"
 
 	fmt.Println("\n--- 重命名文件 ---")
-	renameResult, err := cli.FileRename(ctx, fileID, "新文件名")
+	err = cli.FileRename(ctx, fileID, "新文件名")
 	if err != nil {
 		log.Printf("重命名失败: %v", err)
 	} else {
-		printJSON(renameResult)
+		fmt.Println("文件重命名成功")
 	}
 
 	fmt.Println("\n--- 移动文件 ---")
@@ -162,15 +162,15 @@ func main() {
 	}
 
 	fmt.Println("\n--- 收藏文件 ---")
-	starResult, err := cli.FileBatchStar(ctx, []string{fileID})
+	err = cli.FileBatchStar(ctx, []string{fileID}, true)
 	if err != nil {
 		log.Printf("收藏文件失败: %v", err)
 	} else {
-		printJSON(starResult)
+		fmt.Println("文件收藏成功")
 	}
 
 	fmt.Println("\n--- 收藏列表 ---")
-	starList, err := cli.FileStarList(ctx)
+	starList, err := cli.FileStarList(ctx, 50, "")
 	if err != nil {
 		log.Printf("获取收藏列表失败: %v", err)
 	} else {
@@ -178,11 +178,11 @@ func main() {
 	}
 
 	fmt.Println("\n--- 取消收藏 ---")
-	unstarResult, err := cli.FileBatchUnstar(ctx, []string{fileID})
+	err = cli.FileBatchUnstar(ctx, []string{fileID})
 	if err != nil {
 		log.Printf("取消收藏失败: %v", err)
 	} else {
-		printJSON(unstarResult)
+		fmt.Println("取消收藏成功")
 	}
 
 	fmt.Println("\n--- 获取文件下载链接 ---")
@@ -194,7 +194,7 @@ func main() {
 	}
 
 	fmt.Println("\n--- 上传文件 (本地路径) ---")
-	uploadResult, err := cli.Upload(ctx, "/path/to/local/file.txt", "", "上传的文件.txt")
+	uploadResult, err := cli.Upload(ctx, "/path/to/local/file.txt", "")
 	if err != nil {
 		log.Printf("上传文件失败: %v", err)
 	} else {
@@ -206,7 +206,8 @@ func main() {
 	if err != nil {
 		log.Printf("打开文件失败: %v", err)
 	} else {
-		uploadReaderResult, uploadErr := cli.UploadReader(ctx, file, "流式上传.txt", "")
+		stat, _ := file.Stat()
+		uploadReaderResult, uploadErr := cli.UploadReader(ctx, file, "流式上传.txt", stat.Size(), "")
 		if uploadErr != nil {
 			log.Printf("流式上传失败: %v", uploadErr)
 		} else {
@@ -250,7 +251,7 @@ func main() {
 	fmt.Println("\n=== 分享功能演示 ===")
 
 	fmt.Println("\n--- 创建分享链接 ---")
-	shareResult, err := cli.CreateShareLink(ctx, fileID, false)
+	shareResult, err := cli.CreateShareLink(ctx, fileID, 86400, "")
 	if err != nil {
 		log.Printf("创建分享链接失败: %v", err)
 	} else {
@@ -302,18 +303,13 @@ func main() {
 		log.Printf("获取分享文件信息失败: %v", err)
 	} else {
 		fmt.Printf("文件名: %s\n", shareFileInfo.Name)
-		fmt.Printf("大小: %s\n", shareFileInfo.Size)
-		fmt.Printf("文件类型: %s\n", shareFileInfo.Kind)
-		if shareFileInfo.WebContentLink != "" {
-			fmt.Printf("Web下载链接: %s\n", shareFileInfo.WebContentLink)
+		fmt.Printf("大小: %d\n", shareFileInfo.Size)
+		fmt.Printf("文件类型: %s\n", shareFileInfo.MediaType)
+		if shareFileInfo.ShareURL != "" {
+			fmt.Printf("分享链接: %s\n", shareFileInfo.ShareURL)
 		}
-		if len(shareFileInfo.Medias) > 0 {
-			fmt.Printf("媒体数量: %d\n", len(shareFileInfo.Medias))
-			for i, media := range shareFileInfo.Medias {
-				fmt.Printf("  媒体%d: %s\n", i+1, media.MediaName)
-				fmt.Printf("    分辨率: %s\n", media.ResolutionName)
-				fmt.Printf("    视频: %dx%d\n", media.Video.Width, media.Video.Height)
-			}
+		if shareFileInfo.DownloadURL != "" {
+			fmt.Printf("下载链接: %s\n", shareFileInfo.DownloadURL)
 		}
 	}
 
@@ -323,7 +319,7 @@ func main() {
 		log.Printf("获取分享文件信息失败: %v", err)
 	} else {
 		fmt.Printf("文件名: %s\n", shareFileInfoWithPwd.Name)
-		fmt.Printf("大小: %s\n", shareFileInfoWithPwd.Size)
+		fmt.Printf("大小: %d\n", shareFileInfoWithPwd.Size)
 	}
 
 	fmt.Println("\n--- 获取分享文件下载链接 (原画) ---")
@@ -349,7 +345,7 @@ func main() {
 	} else {
 		fmt.Printf("分享中包含 %d 个文件/文件夹:\n", len(shareFiles))
 		for i, file := range shareFiles {
-			isFolder := file.Kind == "drive#folder"
+			isFolder := file.MediaType == "application/vnd.google-apps.folder"
 			fmt.Printf("  %d. %s %s\n", i+1, file.Name, map[bool]string{true: "(文件夹)", false: ""}[isFolder])
 		}
 	}
@@ -360,11 +356,10 @@ func main() {
 	if err := cli.EncodeToken(); err != nil {
 		log.Printf("编码令牌失败: %v", err)
 	} else {
-		fmt.Printf("编码后的令牌: %s\n", cli.GetEncodedToken())
+		fmt.Println("令牌编码成功")
 	}
 
 	fmt.Println("\n--- 解码令牌 (从配置文件恢复) ---")
-	cli.SetEncodedToken("your_saved_token")
 	if err := cli.DecodeToken(); err != nil {
 		log.Printf("解码令牌失败: %v", err)
 	} else {

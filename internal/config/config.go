@@ -1,139 +1,184 @@
-// Package config 提供了PikPak API客户端配置文件的加载和保存功能
-//
-// 该包负责管理客户端配置文件的读写操作：
-//   - LoadConfig: 从多个可能的位置加载配置文件
-//   - SaveConfig: 将配置保存到指定文件路径
-//
-// 配置文件格式：
-//   - 使用JSON格式存储
-//   - 文件扩展名：.json
-//   - 支持多个搜索路径
-//
-// 配置文件搜索顺序：
-//   1. 当前目录下的config.json
-//   2. 当前目录下的.pikpakapi.json
-//   3. 用户主目录下的.pikpakapi.json
-//
-// 使用示例：
-//
-//	// 加载配置
-//	cfg, err := config.LoadConfig()
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//
-//	// 创建新配置
-//	newCfg := &config.Config{
-//	    Username: "user@example.com",
-//	    Password: "password123",
-//	}
-//
-//	// 保存配置
-//	if err := config.SaveConfig(newCfg, "config.json"); err != nil {
-//	    log.Fatal(err)
-//	}
 package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
-// Config PikPak API客户端的配置数据结构
-//
-// 该结构体存储了客户端的所有配置信息
-// 支持JSON序列化和反序列化用于配置文件读写
-//
-// 字段说明：
-//   - Username: string 用户登录名
-//     - 支持邮箱、手机号或用户名格式
-//     - 用于登录认证
-//   - Password: string 用户密码
-//     - 登录密码，明文存储（建议配合加密使用）
-//     - 敏感信息，注意保护
-//   - AccessToken: string 访问令牌
-//     - API请求的身份验证凭证
-//     - 有时效性，过期后需要刷新
-//   - RefreshToken: string 刷新令牌
-//     - 用于刷新访问令牌的长期凭证
-//     - 有效期较长
-//   - EncodedToken: string 编码后的令牌
-//     - Base64编码的令牌字符串
-//     - 便于持久化保存
-//   - DeviceID: string 设备标识符
-//     - 设备的唯一标识
-//     - 用于设备绑定
-//   - CaptchaToken: string 验证码令牌
-//     - 登录时的验证码验证凭证
-//     - 临时有效
-//   - UserID: string 用户标识符
-//     - 用户的唯一标识
-//     - 由PikPak服务分配
-//
-// 配置文件格式：
-//   {
-//     "username": "user@example.com",
-//     "password": "password123",
-//     "access_token": "...",
-//     "refresh_token": "...",
-//     "encoded_token": "...",
-//     "device_id": "...",
-//     "captcha_token": "...",
-//     "user_id": "..."
-//   }
-//
-// 安全考虑：
-//   - 密码和令牌是敏感信息
-//   - 配置文件应设置适当的访问权限
-//   - 生产环境建议加密存储敏感信息
 type Config struct {
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	AccessToken   string `json:"access_token"`
-	RefreshToken  string `json:"refresh_token"`
-	EncodedToken  string `json:"encoded_token"`
-	DeviceID      string `json:"device_id"`
-	CaptchaToken  string `json:"captcha_token"`
-	UserID        string `json:"user_id"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	EncodedToken string `json:"encoded_token"`
+	DeviceID     string `json:"device_id"`
+	CaptchaToken string `json:"captcha_token"`
+	UserID       string `json:"user_id"`
 }
 
-// LoadConfig 从多个可能的位置加载配置文件
-//
-// 该函数按顺序搜索预定义的配置文件路径
-// 找到第一个存在的有效配置文件即返回
-// 如果所有配置文件都不存在，返回空的Config对象
-//
-// 配置文件搜索顺序：
-//   1. 当前目录下的"config.json"
-//   2. 当前目录下的".pikpakapi.json"
-//   3. 用户主目录下的".pikpakapi.json"
-//
-// 返回值：
-//   - *Config 加载的配置对象
-//     - 如果找到配置文件，返回解析后的配置
-//     - 如果未找到任何配置文件，返回空的Config{}
-//   - error 错误信息
-//     - 始终返回nil（当前实现不返回错误）
-//     - 未来可能修改为返回读取错误
-//
-// 加载流程：
-//   1. 遍历所有配置文件路径
-//   2. 尝试读取文件内容
-//   3. 解析JSON数据到Config结构体
-//   4. 解析成功则返回，解析失败则继续尝试下一个路径
-//   5. 所有路径都失败时返回空配置
-//
-// 使用场景：
-//   - 程序启动时加载已保存的配置
-//   - 恢复用户的登录状态
-//   - 获取设备ID等预配置信息
-//
-// 注意事项：
-//   - 函数不会返回错误，未找到配置时返回空对象
-//   - 建议在保存配置时使用SaveConfig函数
-//   - 配置文件权限应设置为0600以保护敏感信息
+var (
+	ErrEmptyUsername   = errors.New("username cannot be empty")
+	ErrEmptyPassword   = errors.New("password cannot be empty")
+	ErrInvalidEmail    = errors.New("invalid email format")
+	ErrInvalidPhone    = errors.New("invalid phone format")
+	ErrInvalidUsername = errors.New("invalid username format")
+)
+
+type ConfigBuilder struct {
+	config Config
+}
+
+func NewConfigBuilder() *ConfigBuilder {
+	return &ConfigBuilder{
+		config: Config{},
+	}
+}
+
+func (b *ConfigBuilder) WithUsername(username string) *ConfigBuilder {
+	b.config.Username = username
+	return b
+}
+
+func (b *ConfigBuilder) WithPassword(password string) *ConfigBuilder {
+	b.config.Password = password
+	return b
+}
+
+func (b *ConfigBuilder) WithAccessToken(accessToken string) *ConfigBuilder {
+	b.config.AccessToken = accessToken
+	return b
+}
+
+func (b *ConfigBuilder) WithRefreshToken(refreshToken string) *ConfigBuilder {
+	b.config.RefreshToken = refreshToken
+	return b
+}
+
+func (b *ConfigBuilder) WithEncodedToken(encodedToken string) *ConfigBuilder {
+	b.config.EncodedToken = encodedToken
+	return b
+}
+
+func (b *ConfigBuilder) WithDeviceID(deviceID string) *ConfigBuilder {
+	b.config.DeviceID = deviceID
+	return b
+}
+
+func (b *ConfigBuilder) WithCaptchaToken(captchaToken string) *ConfigBuilder {
+	b.config.CaptchaToken = captchaToken
+	return b
+}
+
+func (b *ConfigBuilder) WithUserID(userID string) *ConfigBuilder {
+	b.config.UserID = userID
+	return b
+}
+
+func (b *ConfigBuilder) Build() (*Config, error) {
+	if err := b.validate(); err != nil {
+		return nil, err
+	}
+	return &b.config, nil
+}
+
+func (b *ConfigBuilder) validate() error {
+	if b.config.Username == "" {
+		return ErrEmptyUsername
+	}
+	if b.config.Password == "" {
+		return ErrEmptyPassword
+	}
+	return nil
+}
+
+func ValidateConfig(cfg *Config) error {
+	if cfg.Username == "" {
+		return ErrEmptyUsername
+	}
+	if cfg.Password == "" {
+		return ErrEmptyPassword
+	}
+	return nil
+}
+
+func (b *ConfigBuilder) WithConfig(cfg *Config) *ConfigBuilder {
+	if cfg != nil {
+		b.config = *cfg
+	}
+	return b
+}
+
+type ValidationError struct {
+	Field   string
+	Message error
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("validation failed: %s", e.Message.Error())
+}
+
+func (e *ValidationError) Unwrap() error {
+	return e.Message
+}
+
+func (b *ConfigBuilder) ValidateUsername() error {
+	username := b.config.Username
+	if username == "" {
+		return &ValidationError{Field: "Username", Message: ErrEmptyUsername}
+	}
+
+	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+	phoneRegex := regexp.MustCompile(`^1[3-9]\d{9}$`)
+
+	if emailRegex.MatchString(username) {
+		return nil
+	}
+	if phoneRegex.MatchString(username) {
+		return nil
+	}
+
+	usernameRegex := regexp.MustCompile(`^[a-zA-Z0-9_-]{2,50}$`)
+	if usernameRegex.MatchString(username) {
+		return nil
+	}
+
+	return &ValidationError{Field: "Username", Message: ErrInvalidUsername}
+}
+
+func (b *ConfigBuilder) ValidatePassword() error {
+	if len(b.config.Password) < 6 {
+		return &ValidationError{Field: "Password", Message: errors.New("password must be at least 6 characters")}
+	}
+	return nil
+}
+
+func (b *ConfigBuilder) ValidateDeviceID() error {
+	if b.config.DeviceID != "" && len(b.config.DeviceID) < 5 {
+		return &ValidationError{Field: "DeviceID", Message: errors.New("device ID must be at least 5 characters")}
+	}
+	return nil
+}
+
+func (b *ConfigBuilder) Validate() []error {
+	var errs []error
+
+	if err := b.ValidateUsername(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := b.ValidatePassword(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := b.ValidateDeviceID(); err != nil {
+		errs = append(errs, err)
+	}
+
+	return errs
+}
+
 func LoadConfig() (*Config, error) {
 	configPaths := []string{
 		"config.json",
@@ -164,55 +209,6 @@ func LoadConfig() (*Config, error) {
 	return cfg, nil
 }
 
-// SaveConfig 将配置保存到指定文件路径
-//
-// 该函数将Config结构体序列化为格式化的JSON字符串
-// 并写入到指定的文件路径
-//
-// 参数说明：
-//   - cfg: *Config 要保存的配置对象
-//     - 包含所有要保存的配置信息
-//     - 结构体会被序列化为JSON格式
-//   - path: string 目标文件路径
-//     - 可以是相对路径或绝对路径
-//     - 文件目录必须存在，否则会保存失败
-//
-// 序列化格式：
-//   - 使用json.MarshalIndent进行格式化
-//   - 缩进为2个空格
-//   - 键名使用原始的JSON标签
-//
-// 文件权限：
-//   - 使用0644权限创建文件
-//   - 文件所有者可读写，组用户和其他用户可读
-//
-// 返回值：
-//   - error 保存过程中的错误
-//     - 序列化失败：fmt.Errorf("failed to marshal config: %w", err)
-//     - 写入失败：fmt.Errorf("failed to write config: %w", err)
-//
-// 使用场景：
-//   - 登录成功后保存配置
-//   - 令牌刷新后更新配置
-//   - 保存用户偏好的配置项
-//
-// 注意事项：
-//   - 密码和令牌是敏感信息
-//   - 建议设置文件权限为0600
-//   - 保存前可以加密敏感字段
-//
-// 使用示例：
-//
-//	cfg := &config.Config{
-//	    Username:     "user@example.com",
-//	    AccessToken:  "...",
-//	    RefreshToken: "...",
-//	    EncodedToken: "...",
-//	}
-//
-//	if err := config.SaveConfig(cfg, "config.json"); err != nil {
-//	    log.Fatalf("保存配置失败: %v", err)
-//	}
 func SaveConfig(cfg *Config, path string) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
