@@ -1,6 +1,6 @@
-.PHONY: all build clean test lint run example linux-amd64 linux-aarch64 windows-amd64 windows-aarch64
+.PHONY: all build clean test lint run example linux-amd64 linux-aarch64 windows-amd64 windows-aarch64 darwin-amd64 darwin-aarch64
 
-all: linux-amd64 linux-aarch64 windows-amd64 windows-aarch64
+all: linux-amd64 linux-aarch64 windows-amd64 windows-aarch64 darwin-amd64 darwin-aarch64
 
 build:
 	go build -o bin/pikpakapi ./cmd/example
@@ -16,6 +16,12 @@ windows-amd64:
 
 windows-aarch64:
 	GOOS=windows GOARCH=arm64 go build -o bin/pikpakapi-windows-aarch64.exe ./cmd/example
+
+darwin-amd64:
+	GOOS=darwin GOARCH=amd64 go build -o bin/pikpakapi-darwin-amd64 ./cmd/example
+
+darwin-aarch64:
+	GOOS=darwin GOARCH=arm64 go build -o bin/pikpakapi-darwin-aarch64 ./cmd/example
 
 clean:
 	rm -rf bin/
