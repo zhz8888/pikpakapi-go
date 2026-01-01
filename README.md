@@ -69,18 +69,40 @@ pikpakapi-go/
 │   └── example/          # 示例程序
 │       └── main.go
 ├── internal/
+│   ├── auth/             # 认证模块
+│   │   └── auth.go
 │   ├── client/           # API 客户端核心实现
 │   │   ├── client.go
 │   │   └── client_test.go
 │   ├── config/           # 配置管理
 │   │   ├── config.go
 │   │   └── config_test.go
+│   ├── constants/        # 常量定义
+│   │   └── constants.go
+│   ├── crypto/           # 加密工具
+│   │   ├── crypto.go
+│   │   └── crypto_test.go
+│   ├── download/         # 下载管理
+│   │   └── download.go
+│   ├── event/            # 事件处理
+│   │   ├── event.go
+│   │   └── event_test.go
 │   ├── exception/        # 异常处理
 │   │   ├── exception.go
 │   │   └── exception_test.go
+│   ├── file/             # 文件操作
+│   │   └── file.go
+│   ├── share/            # 分享功能
+│   │   └── share.go
+│   ├── signer/           # 签名工具
+│   │   ├── signer.go
+│   │   └── signer_test.go
+│   ├── token/            # Token 管理
+│   │   ├── token.go
+│   │   └── token_test.go
+│   ├── useragent/        # User-Agent 管理
+│   │   └── useragent.go
 │   └── utils/            # 工具函数
-│       ├── token.go
-│       ├── token_test.go
 │       ├── utils.go
 │       └── utils_test.go
 ├── pkg/
@@ -145,3 +167,4 @@ MIT
 ## Credit
 
 [Quan666/PikPakAPI](https://github.com/Quan666/PikPakAPI)
+[OpenListTeam/OpenList](https://github.com/OpenListTeam/OpenList)
