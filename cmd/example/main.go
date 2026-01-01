@@ -126,6 +126,14 @@ func main() {
 		}
 	}
 
+	fmt.Println("\n=== 删除离线任务 ===")
+	err = cli.DeleteOfflineTasks(ctx, []string{"task_id"}, false)
+	if err != nil {
+		log.Printf("删除任务失败: %v", err)
+	} else {
+		fmt.Println("任务删除成功")
+	}
+
 	fmt.Println("\n=== 重试失败任务 ===")
 	err = cli.OfflineTaskRetry(ctx, "task_id")
 	if err != nil {
