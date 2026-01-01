@@ -345,6 +345,61 @@ downloadURL, err := cli.GetShareDownloadURL(ctx, "https://www.mypikpak.com/s/xxx
 restored, err := cli.Restore(ctx, "share_id", "pass_code_token", []string{"file_id"})
 ```
 
+### 获取分享链接的文件信息
+
+```go
+info, err := cli.GetShareFileInfo(ctx, "https://pan.pikpak.com/share/link/xxx", "")
+// info 包含:
+//   - ID: 文件ID
+//   - Name: 文件名
+//   - Size: 文件大小
+//   - Kind: 文件类型 (drive#file 或 drive#folder)
+//   - ThumbnailLink: 缩略图链接
+//   - WebContentLink: Web下载链接
+//   - Medias: 媒体信息列表（视频文件包含多个画质选项）
+```
+
+### 获取分享链接的文件信息（带密码）
+
+```go
+info, err := cli.GetShareFileInfo(ctx, "https://pan.pikpak.com/share/link/xxx", "password123")
+```
+
+### 获取分享文件下载链接（原画）
+
+```go
+url, err := cli.GetShareFileDownloadURL(ctx, "https://pan.pikpak.com/share/link/xxx", "", false)
+```
+
+### 获取分享文件下载链接（转码高清）
+
+```go
+url, err := cli.GetShareFileDownloadURL(ctx, "https://pan.pikpak.com/share/link/xxx", "", true)
+// 转码后的链接通常画质更高，适合在线观看
+```
+
+### 获取分享文件下载链接（带密码）
+
+```go
+url, err := cli.GetShareFileDownloadURL(ctx, "https://pan.pikpak.com/share/link/xxx", "password123", false)
+```
+
+### 获取分享链接的文件列表
+
+```go
+files, err := cli.GetShareFiles(ctx, "https://pan.pikpak.com/share/link/xxx", "")
+// 返回 []*ShareFileInfo 数组
+for _, file := range files {
+    fmt.Printf("%s - %s\n", file.Name, file.Size)
+}
+```
+
+### 获取分享链接的文件列表（带密码）
+
+```go
+files, err := cli.GetShareFiles(ctx, "https://pan.pikpak.com/share/link/xxx", "password123")
+```
+
 ## 错误处理
 
 所有 API 方法返回的错误类型为 `*exception.PikpakException`，包含以下信息：
