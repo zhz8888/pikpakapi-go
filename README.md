@@ -32,8 +32,12 @@ func main() {
 	ctx := context.Background()
 
 	cli := client.NewClient(
-		client.WithUsername("your_username"),
+		client.WithUsername("your_email@example.com"),
 		client.WithPassword("your_password"),
+		client.WithMaxRetries(3),
+		client.WithTokenRefreshCallback(func(c *client.Client) {
+			log.Println("Token refreshed successfully!")
+		}),
 	)
 
 	if err := cli.Login(ctx); err != nil {
@@ -41,169 +45,97 @@ func main() {
 	}
 
 	userInfo := cli.GetUserInfo()
-	printJSON(userInfo)
+	log.Printf("User: %s, UserID: %s", userInfo["username"], userInfo["user_id"])
 
-	quota, _ := cli.GetQuotaInfo(ctx)
-	printJSON(quota)
+	quota, err := cli.GetQuotaInfo(ctx)
+	if err != nil {
+		log.Fatalf("Get quota failed: %v", err)
+	}
+	log.Printf("Quota: %+v", quota)
 
-	files, _ := cli.FileList(ctx, 20, "", "")
-	printJSON(files)
+	files, err := cli.FileList(ctx, 20, "", "")
+	if err != nil {
+		log.Fatalf("List files failed: %v", err)
+	}
+	log.Printf("Files: %+v", files)
 }
 ```
 
-## API 文档
+## 项目结构
 
-### 客户端初始化
+```
+pikpakapi-go/
+├── cmd/
+│   └── example/          # 示例程序
+│       └── main.go
+├── internal/
+│   ├── client/           # API 客户端核心实现
+│   │   ├── client.go
+│   │   └── client_test.go
+│   ├── config/           # 配置管理
+│   │   ├── config.go
+│   │   └── config_test.go
+│   ├── exception/        # 异常处理
+│   │   ├── exception.go
+│   │   └── exception_test.go
+│   └── utils/            # 工具函数
+│       ├── token.go
+│       ├── token_test.go
+│       ├── utils.go
+│       └── utils_test.go
+├── pkg/
+│   └── enums/            # 枚举定义
+│       ├── download_status.go
+│       └── download_status_test.go
+├── API.md                # 详细 API 文档
+├── Makefile              # 构建脚本
+├── go.mod
+└── LICENSE
+```
+
+## 核心组件
+
+### Client 客户端
+
+`internal/client/client.go` 包含了与 PikPak API 交互的核心客户端实现：
+
+- **认证** - 登录、令牌刷新、验证码处理
+- **文件操作** - 创建文件夹、删除、重命名、收藏、分享
+- **离线下载** - 创建下载任务、查询状态、任务管理
+- **配额查询** - 获取账户存储配额信息
+- **分享管理** - 创建分享链接、恢复分享文件
+
+### 配置选项
 
 ```go
 cli := client.NewClient(
 	client.WithUsername("username"),
 	client.WithPassword("password"),
-	client.WithMaxRetries(3),
-	client.WithInitialBackoff(2 * time.Second),
+	client.WithMaxRetries(3),                    // 最大重试次数（默认3次）
+	client.WithInitialBackoff(2 * time.Second), // 重试初始退避时间（默认3秒）
 	client.WithTokenRefreshCallback(func(c *client.Client) {
 		log.Println("Token refreshed!")
 	}),
 )
 ```
 
-### 认证管理
+## API 文档
 
-```go
-// 登录
-if err := cli.Login(ctx); err != nil {
-	log.Fatalf("Login failed: %v", err)
-}
-
-// 刷新访问令牌
-if err := cli.RefreshAccessToken(ctx); err != nil {
-	log.Fatalf("Refresh token failed: %v", err)
-}
-
-// 获取用户信息
-userInfo := cli.GetUserInfo()
-// userInfo包含: username, user_id, access_token, refresh_token, encoded_token
-
-// 编码令牌（保存到配置文件）
-if err := cli.EncodeToken(); err != nil {
-	log.Fatal(err)
-}
-token := cli.encodedToken
-
-// 解码令牌（从配置文件恢复）
-cli.encodedToken = token
-if err := cli.DecodeToken(); err != nil {
-	log.Fatal(err)
-}
-```
-
-### 用户信息
-
-```go
-// 获取账户配额信息
-quota, err := cli.GetQuotaInfo(ctx)
-// quota包含: total_storage, used_storage, subscription_plan
-```
-
-### 文件管理
-
-```go
-// 列出文件
-files, err := cli.FileList(ctx, 20, "", "")
-// 参数: size, parentID(空为根目录), nextPageToken
-
-// 创建文件夹
-result, err := cli.CreateFolder(ctx, "New Folder", "")
-
-// 重命名文件
-renamed, err := cli.FileRename(ctx, "file_id", "New Name")
-
-// 收藏文件
-starred, err := cli.FileBatchStar(ctx, []string{"file_id1", "file_id2"})
-
-// 取消收藏
-unstarred, err := cli.FileBatchUnstar(ctx, []string{"file_id1"})
-
-// 获取收藏列表
-stars, err := cli.FileStarList(ctx)
-
-// 移动到回收站
-trashed, err := cli.DeleteToTrash(ctx, []string{"file_id"})
-
-// 从回收站恢复
-restored, err := cli.Untrash(ctx, []string{"file_id"})
-
-// 永久删除
-deleted, err := cli.DeleteForever(ctx, []string{"file_id"})
-
-// 上传文件（本地路径）
-uploaded, err := cli.Upload(ctx, "/path/to/file.txt", "", "file.txt")
-
-// 上传文件（流式）
-file, err := os.Open("/path/to/file.txt")
-defer file.Close()
-uploaded, err := cli.UploadReader(ctx, file, "file.txt", "")
-
-// 获取文件变更事件
-events, err := cli.Events(ctx, 100, "")
-```
-
-### 离线下载
-
-```go
-// 创建离线下载任务（磁力链接）
-result, err := cli.OfflineDownload(ctx, "magnet:?xt=urn:btih:...", "", "My Download")
-// 参数: fileURL, parentID, name
-
-// 创建离线下载任务（HTTP链接）
-result, err := cli.OfflineDownload(ctx, "https://example.com/file.zip", "", "File Download")
-
-// 创建离线下载任务（BT种子文件）
-result, err := cli.OfflineDownload(ctx, "/path/to/torrent.torrent", "", "BT Download")
-
-// 获取离线任务列表
-tasks, err := cli.OfflineList(ctx, 10, "", nil)
-// phases可选: "PHASE_TYPE_RUNNING", "PHASE_TYPE_ERROR", "PHASE_TYPE_COMPLETE", "PHASE_TYPE_PENDING"
-
-// 获取任务状态
-status, err := cli.GetTaskStatus(ctx, taskID, fileID)
-
-// 重试失败任务
-retried, err := cli.OfflineTaskRetry(ctx, taskID)
-
-// 删除任务（可选是否删除文件）
-err := cli.DeleteTasks(ctx, []string{taskID}, true)
-
-// 获取离线文件详情
-info, err := cli.OfflineFileInfo(ctx, fileID)
-```
-
-### 分享功能
-
-```go
-// 创建分享链接
-share, err := cli.CreateShareLink(ctx, "file_id", false)
-// needPassword: 是否需要提取码
-
-// 批量分享文件
-shared, err := cli.FileBatchShare(ctx, []string{"file_id1", "file_id2"}, false)
-
-// 获取分享信息
-info, err := cli.GetShareInfo(ctx, "https://www.mypikpak.com/s/xxx")
-
-// 获取分享文件下载链接
-downloadURL, err := cli.GetShareDownloadURL(ctx, "https://www.mypikpak.com/s/xxx", "file_id")
-
-// 恢复分享文件
-restored, err := cli.Restore(ctx, "share_id", "pass_code_token", []string{"file_id"})
-```
+详细 API 文档请参考 [API.md](API.md)。
 
 ## 构建
 
 ```bash
 make          # 构建所有平台
 make linux-amd64
+make darwin-amd64
 make windows-amd64
+```
+
+## 测试
+
+```bash
+go test ./...
 ```
 
 ## License
