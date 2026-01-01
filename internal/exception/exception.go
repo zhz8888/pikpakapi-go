@@ -195,6 +195,15 @@ func IsPikpakException(err error) bool {
 //   - ErrEmptyJSONData: JSON数据为空
 //     - API返回空数据或JSON解析失败
 //     - 可能表示服务器响应异常
+//   - ErrInvalidFileID: 文件ID无效
+//     - 当文件ID为空或格式不正确时返回
+//     - 用于文件操作前的参数验证
+//   - ErrInvalidFileName: 文件名为空
+//     - 当新文件名为空时返回
+//     - 用于重命名操作时的参数验证
+//   - ErrEmptyFileIDs: 文件ID列表为空
+//     - 当批量操作的ID列表为空时返回
+//     - 用于批量删除等操作前的参数验证
 var (
 	ErrInvalidUsernamePassword = NewPikpakException("invalid username or password")
 	ErrInvalidEncodedToken     = NewPikpakException("invalid encoded token")
@@ -203,4 +212,8 @@ var (
 	ErrMaxRetriesReached       = NewPikpakException("max retries reached")
 	ErrUnknownError            = NewPikpakException("unknown error")
 	ErrEmptyJSONData           = NewPikpakException("empty JSON data")
+	ErrInvalidFileID           = NewPikpakException("invalid file id")
+	ErrInvalidFileName         = NewPikpakException("invalid file name")
+	ErrEmptyFileIDs            = NewPikpakException("file ids is empty")
+	ErrInvalidURL              = NewPikpakException("invalid url")
 )

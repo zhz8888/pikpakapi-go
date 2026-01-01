@@ -45,6 +45,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -105,6 +106,7 @@ type Client struct {
 	httpClient              *http.Client
 	tokenRefreshCallback    func(*Client)
 	tokenRefreshCallbackCtx context.Context
+	baseURL                 string
 }
 
 // Option 函数式选项模式用于配置Client
@@ -121,6 +123,28 @@ type Client struct {
 //		client.WithInitialBackoff(5 * time.Second),
 //	)
 type Option func(*Client)
+
+type AboutResponse struct {
+	Quota struct {
+		Limit         string `json:"limit"`
+		Usage         string `json:"usage"`
+		UsageInTrash  string `json:"usage_in_trash"`
+		IsUnlimited   bool   `json:"is_unlimited"`
+		Complimentary string `json:"complimentary"`
+	} `json:"quota"`
+	ExpiresAt string `json:"expires_at"`
+	UserType  int    `json:"user_type"`
+}
+
+type StorageInfo struct {
+	TotalBytes    uint64
+	UsedBytes     uint64
+	TrashBytes    uint64
+	IsUnlimited   bool
+	Complimentary string
+	ExpiresAt     string
+	UserType      int
+}
 
 // WithUsername 设置用户的登录名称
 //
@@ -164,6 +188,24 @@ func WithPassword(password string) Option {
 func WithDeviceID(deviceID string) Option {
 	return func(c *Client) {
 		c.deviceID = deviceID
+	}
+}
+
+func WithBaseURL(baseURL string) Option {
+	return func(c *Client) {
+		c.baseURL = baseURL
+	}
+}
+
+func WithAccessToken(token string) Option {
+	return func(c *Client) {
+		c.accessToken = token
+	}
+}
+
+func WithRefreshToken(token string) Option {
+	return func(c *Client) {
+		c.refreshToken = token
 	}
 }
 
@@ -586,6 +628,274 @@ func (c *Client) getJSON(ctx context.Context, URL string, params map[string]stri
 	return result, nil
 }
 
+// GetStorageInfo 获取存储配额信息
+//
+// 查询当前账户的存储空间使用情况和配额限制
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//
+// 返回值：
+//   - *StorageInfo 存储配额信息对象，包含以下字段：
+//   - TotalBytes: 总存储空间（字节），0表示无限容量
+//   - UsedBytes: 已使用空间（字节）
+//   - TrashBytes: 回收站占用空间（字节）
+//   - IsUnlimited: 是否为无限容量
+//   - Complimentary: 附加服务类型（如 "premium"、"basic" 等）
+//   - error 错误信息
+//
+// API endpoint：
+//   - GET https://api-drive.mypikpak.com/drive/v1/about
+//
+// 使用示例：
+//
+//	quota, err := cli.GetStorageInfo(ctx)
+//	if err != nil {
+//		log.Fatalf("获取配额失败: %v", err)
+//	}
+//	fmt.Printf("总容量: %d GB\n", quota.TotalBytes/1024/1024/1024)
+//	fmt.Printf("已用: %d GB\n", quota.UsedBytes/1024/1024/1024)
+//	fmt.Printf("无限容量: %v\n", quota.IsUnlimited)
+func (c *Client) GetStorageInfo(ctx context.Context) (*StorageInfo, error) {
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "api-drive.mypikpak.com"
+	}
+	if !strings.Contains(baseURL, "://") {
+		baseURL = "https://" + baseURL
+	}
+	resp, err := c.getJSON(ctx, baseURL+"/drive/v1/about", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	quota, ok := resp["quota"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("quota not found in response")
+	}
+
+	limitStr, ok := quota["limit"].(string)
+	if !ok {
+		return nil, fmt.Errorf("quota limit is not a string")
+	}
+	limit, err := strconv.ParseUint(limitStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid quota limit format: %w", err)
+	}
+
+	usageStr, ok := quota["usage"].(string)
+	if !ok {
+		return nil, fmt.Errorf("quota usage is not a string")
+	}
+	usage, err := strconv.ParseUint(usageStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid quota usage format: %w", err)
+	}
+
+	trashUsageStr, ok := quota["usage_in_trash"].(string)
+	if !ok {
+		return nil, fmt.Errorf("quota usage_in_trash is not a string")
+	}
+	trashUsage, err := strconv.ParseUint(trashUsageStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid quota usage_in_trash format: %w", err)
+	}
+
+	return &StorageInfo{
+		TotalBytes:    limit,
+		UsedBytes:     usage,
+		TrashBytes:    trashUsage,
+		IsUnlimited:   quota["is_unlimited"].(bool),
+		Complimentary: quota["complimentary"].(string),
+	}, nil
+}
+
+// GetFileLink 获取文件的下载链接
+//
+// 根据文件ID获取可直接访问的下载链接
+// 如果文件有多个媒体流，优先返回媒体链接而非Web内容链接
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - fileID: string 文件的唯一标识符
+//
+// 返回值：
+//   - string 文件的直接下载链接URL
+//   - error 错误信息
+//
+// API endpoint：
+//   - GET https://api-drive.mypikpak.net/drive/v1/files/{fileID}
+//   - 查询参数：_magic=2021, usage=CACHE, thumbnail_size=SIZE_LARGE
+//
+// 链接优先级：
+//  1. 如果文件有媒体流（medias），返回第一个媒体的链接
+//  2. 否则返回 web_content_link
+//
+// 使用示例：
+//
+//	downloadURL, err := cli.GetFileLink(ctx, "file_id_here")
+//	if err != nil {
+//		log.Fatalf("获取下载链接失败: %v", err)
+//	}
+//	fmt.Println("下载链接:", downloadURL)
+func (c *Client) GetFileLink(ctx context.Context, fileID string) (string, error) {
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://api-drive.mypikpak.net"
+	}
+	resp, err := c.getJSON(ctx, fmt.Sprintf("%s/drive/v1/files/%s", baseURL, fileID), map[string]string{
+		"_magic":         "2021",
+		"usage":          "CACHE",
+		"thumbnail_size": "SIZE_LARGE",
+	})
+	if err != nil {
+		return "", err
+	}
+
+	url := resp["web_content_link"].(string)
+
+	if medias, ok := resp["medias"].([]interface{}); ok && len(medias) > 0 {
+		if media, ok := medias[0].(map[string]interface{}); ok {
+			if link, ok := media["link"].(map[string]interface{}); ok {
+				if linkUrl, ok := link["url"].(string); ok && linkUrl != "" {
+					url = linkUrl
+				}
+			}
+		}
+	}
+
+	return url, nil
+}
+
+// Move 移动文件到指定文件夹
+//
+// 将一个或多个文件移动到新的父文件夹
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - fileID: string 要移动的文件ID
+//   - parentID: string 目标文件夹ID
+//   - 空字符串表示移动到根目录
+//
+// 返回值：
+//   - error 错误信息，操作成功时返回nil
+//
+// API endpoint：
+//   - POST https://api-drive.mypikpak.net/drive/v1/files:batchMove
+//   - 请求体：{"ids": [fileID], "to": {"parent_id": parentID}}
+//
+// 使用示例：
+//
+//	// 移动文件到文件夹
+//	err := cli.Move(ctx, "file_id", "folder_id")
+//	if err != nil {
+//		log.Fatalf("移动失败: %v", err)
+//	}
+//
+//	// 移动到根目录
+//	err = cli.Move(ctx, "file_id", "")
+func (c *Client) Move(ctx context.Context, fileID string, parentID string) error {
+	if fileID == "" {
+		return exception.ErrInvalidFileID
+	}
+
+	body := map[string]interface{}{
+		"ids": []string{fileID},
+		"to": map[string]string{
+			"parent_id": parentID,
+		},
+	}
+
+	_, err := c.postJSON(ctx, "https://api-drive.mypikpak.net/drive/v1/files:batchMove", body)
+	return err
+}
+
+// Copy 复制文件到指定文件夹
+//
+// 将文件复制到新的父文件夹，创建文件的副本
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - fileID: string 要复制的文件ID
+//   - parentID: string 目标文件夹ID
+//   - 空字符串表示复制到根目录
+//
+// 返回值：
+//   - error 错误信息，操作成功时返回nil
+//
+// API endpoint：
+//   - POST https://api-drive.mypikpak.net/drive/v1/files:batchCopy
+//   - 请求体：{"ids": [fileID], "to": {"parent_id": parentID}}
+//
+// 使用示例：
+//
+//	// 复制文件到文件夹
+//	err := cli.Copy(ctx, "file_id", "folder_id")
+//	if err != nil {
+//		log.Fatalf("复制失败: %v", err)
+//	}
+//
+//	// 复制到根目录
+//	err = cli.Copy(ctx, "file_id", "")
+func (c *Client) Copy(ctx context.Context, fileID string, parentID string) error {
+	body := map[string]interface{}{
+		"ids": []string{fileID},
+		"to": map[string]string{
+			"parent_id": parentID,
+		},
+	}
+
+	_, err := c.postJSON(ctx, "https://api-drive.mypikpak.net/drive/v1/files:batchCopy", body)
+	return err
+}
+
+// Rename 重命名文件
+//
+// 修改文件的名称
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - fileID: string 要重命名的文件ID
+//   - newName: string 文件的新名称
+//   - 支持Unicode字符
+//   - 支持特殊字符
+//
+// 返回值：
+//   - error 错误信息，操作成功时返回nil
+//
+// API endpoint：
+//   - PATCH https://api-drive.mypikpak.net/drive/v1/files/{fileID}
+//   - 请求体：{"name": newName}
+//
+// 使用示例：
+//
+//	// 普通重命名
+//	err := cli.Rename(ctx, "file_id", "新文件名.txt")
+//	if err != nil {
+//		log.Fatalf("重命名失败: %v", err)
+//	}
+//
+//	// 包含特殊字符
+//	err = cli.Rename(ctx, "file_id", "文件_2024!@#.txt")
+//
+//	// 包含Unicode字符
+//	err = cli.Rename(ctx, "file_id", "日本語ファイル名.txt")
+func (c *Client) Rename(ctx context.Context, fileID string, newName string) error {
+	if fileID == "" {
+		return exception.ErrInvalidFileID
+	}
+	if newName == "" {
+		return exception.ErrInvalidFileName
+	}
+
+	body := map[string]string{
+		"name": newName,
+	}
+
+	_, err := c.patchJSON(ctx, fmt.Sprintf("https://api-drive.mypikpak.net/drive/v1/files/%s", fileID), body)
+	return err
+}
+
 // postJSON 执行POST请求（JSON格式）并解析响应
 //
 // 使用JSON格式发送请求体，适用于大多数API调用
@@ -609,6 +919,80 @@ func (c *Client) postJSON(ctx context.Context, URL string, data interface{}) (ma
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, URL, bytes.NewReader(bodyData))
+	if err != nil {
+		return nil, exception.NewPikpakExceptionWithError("failed to create request", err)
+	}
+
+	for key, value := range c.getHeaders() {
+		req.Header.Set(key, value)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, exception.NewPikpakExceptionWithError("request failed", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, exception.NewPikpakExceptionWithError("failed to read response", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, exception.NewPikpakExceptionWithError("failed to unmarshal response", err)
+	}
+
+	return result, nil
+}
+
+// patchJSON 执行PATCH请求（JSON格式）并解析响应
+//
+// 用于更新资源的部分属性
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - URL: string 请求的完整URL
+//   - data: interface{} 请求体数据，会序列化为JSON
+//
+// 返回值：
+//   - map[string]interface{} 解析后的JSON响应
+//   - error 错误信息
+//
+// patchJSON 执行PATCH请求（JSON格式）并解析响应
+//
+// 用于更新资源的部分属性，支持条件更新和乐观锁
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - URL: string 请求的完整URL
+//   - data: interface{} 请求体数据，会序列化为JSON
+//
+// 返回值：
+//   - map[string]interface{} 解析后的JSON响应
+//   - error 错误信息，可能的错误类型：
+//   - PikpakException: JSON序列化失败、HTTP请求失败、响应解析失败
+//
+// 与postJSON的区别：
+//   - patchJSON：使用HTTP PATCH方法，用于部分更新
+//   - postJSON：使用HTTP POST方法，通常用于创建或完整更新
+//
+// 使用示例：
+//
+//	result, err := cli.patchJSON(ctx, "https://api-drive.mypikpak.net/drive/v1/files/file_id", map[string]string{
+//		"name": "new_name",
+//	})
+//	if err != nil {
+//		log.Fatalf("更新失败: %v", err)
+//	}
+func (c *Client) patchJSON(ctx context.Context, URL string, data interface{}) (map[string]interface{}, error) {
+	bodyData, err := json.Marshal(data)
+	if err != nil {
+		return nil, exception.NewPikpakExceptionWithError("failed to marshal request data", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, URL, bytes.NewReader(bodyData))
 	if err != nil {
 		return nil, exception.NewPikpakExceptionWithError("failed to create request", err)
 	}
@@ -764,7 +1148,11 @@ func (c *Client) Delete(ctx context.Context, URL string, params map[string]strin
 //   - 登录前必须调用
 //   - 其他需要验证码的操作
 func (c *Client) CaptchaInit(ctx context.Context, action string, meta map[string]interface{}) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/v1/shield/captcha/init", UserHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + UserHost
+	}
+	URL := baseURL + "/v1/shield/captcha/init"
 
 	if meta == nil {
 		timestamp := fmt.Sprintf("%d", utils.GetTimestamp())
@@ -837,7 +1225,11 @@ func (c *Client) Login(ctx context.Context) error {
 		return exception.ErrUsernamePasswordRequired
 	}
 
-	loginURL := fmt.Sprintf("https://%s/v1/auth/signin", UserHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + UserHost
+	}
+	loginURL := baseURL + "/v1/auth/signin"
 
 	metas := make(map[string]interface{})
 	emailRegex := regexp.MustCompile(`^[\w.-]+@[\w.-]+\.\w+$`)
@@ -924,7 +1316,11 @@ func (c *Client) Login(ctx context.Context) error {
 //   - 访问令牌过期时（doRequest自动处理）
 //   - 手动刷新令牌
 func (c *Client) RefreshAccessToken(ctx context.Context) error {
-	refreshURL := fmt.Sprintf("https://%s/v1/auth/token", UserHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + UserHost
+	}
+	refreshURL := baseURL + "/v1/auth/token"
 
 	refreshData := map[string]string{
 		"client_id":     utils.ClientID,
@@ -994,7 +1390,15 @@ func (c *Client) RefreshAccessToken(ctx context.Context) error {
 //	}
 //	folderID := result["id"].(string)
 func (c *Client) CreateFolder(ctx context.Context, name string, parentID string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files", APIHost)
+	if name == "" {
+		return nil, exception.ErrInvalidFileName
+	}
+
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files"
 
 	data := map[string]interface{}{
 		"kind":      "drive#folder",
@@ -1025,7 +1429,15 @@ func (c *Client) CreateFolder(ctx context.Context, name string, parentID string)
 //   - DeleteToTrash：移动到回收站，可恢复
 //   - DeleteForever：永久删除，不可恢复
 func (c *Client) DeleteToTrash(ctx context.Context, ids []string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files:batchTrash", APIHost)
+	if len(ids) == 0 {
+		return nil, exception.ErrEmptyFileIDs
+	}
+
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files:batchTrash"
 
 	data := map[string]interface{}{
 		"ids": ids,
@@ -1050,7 +1462,11 @@ func (c *Client) DeleteToTrash(ctx context.Context, ids []string) (map[string]in
 //   - 只有在回收站中的文件才能恢复
 //   - 恢复后文件将回到原始父文件夹
 func (c *Client) Untrash(ctx context.Context, ids []string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files:batchUntrash", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files:batchUntrash"
 
 	data := map[string]interface{}{
 		"ids": ids,
@@ -1079,7 +1495,11 @@ func (c *Client) Untrash(ctx context.Context, ids []string) (map[string]interfac
 //   - DeleteToTrash：移动到回收站，可恢复
 //   - DeleteForever：永久删除，不可恢复
 func (c *Client) DeleteForever(ctx context.Context, ids []string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files:batchDelete", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files:batchDelete"
 
 	data := map[string]interface{}{
 		"ids": ids,
@@ -1126,7 +1546,15 @@ func (c *Client) DeleteForever(ctx context.Context, ids []string) (map[string]in
 //	}
 //	taskID := result["id"].(string)
 func (c *Client) OfflineDownload(ctx context.Context, fileURL string, parentID string, name string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files", APIHost)
+	if fileURL == "" {
+		return nil, exception.NewPikpakException("file url is required")
+	}
+
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files"
 
 	downloadData := map[string]interface{}{
 		"kind":        "drive#file",
@@ -1143,6 +1571,74 @@ func (c *Client) OfflineDownload(ctx context.Context, fileURL string, parentID s
 	}
 
 	return c.postJSON(ctx, URL, downloadData)
+}
+
+// CaptureScreenshot 对视频文件进行截图
+//
+// 生成视频文件的截图缩略图
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - fileID: string 视频文件的ID
+//
+// 返回值：
+//   - map[string]interface{} 截图任务结果
+//   - error 错误信息
+//
+// 使用场景：
+//   - 为视频文件生成预览截图
+//   - 创建视频缩略图用于展示
+func (c *Client) CaptureScreenshot(ctx context.Context, fileID string) (map[string]interface{}, error) {
+	if fileID == "" {
+		return nil, exception.ErrInvalidFileID
+	}
+
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files:testScreenshot"
+
+	data := map[string]interface{}{
+		"file_id": fileID,
+	}
+
+	return c.postJSON(ctx, URL, data)
+}
+
+// RemoteDownload 远程文件下载
+//
+// 通过URL直接创建远程文件下载任务
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - fileURL: string 远程文件的URL地址
+//
+// 返回值：
+//   - map[string]interface{} 下载任务创建结果
+//   - error 错误信息
+//
+// 使用场景：
+//   - 从外部URL下载文件到PikPak云盘
+//   - 支持HTTP/HTTPS链接
+func (c *Client) RemoteDownload(ctx context.Context, fileURL string) (map[string]interface{}, error) {
+	if fileURL == "" {
+		return nil, exception.ErrInvalidURL
+	}
+
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files"
+
+	data := map[string]interface{}{
+		"kind":        "drive#task",
+		"upload_type": "UPLOAD_TYPE_URL",
+		"url":         map[string]string{"url": fileURL},
+	}
+
+	return c.postJSON(ctx, URL, data)
 }
 
 // OfflineList 获取离线下载任务列表
@@ -1192,7 +1688,11 @@ func (c *Client) OfflineList(ctx context.Context, size int, nextPageToken string
 		phases = []string{"PHASE_TYPE_RUNNING", "PHASE_TYPE_ERROR"}
 	}
 
-	URL := fmt.Sprintf("https://%s/drive/v1/tasks", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/tasks"
 
 	filters := fmt.Sprintf(`{"phase":{"in":"%s"}}`, strings.Join(phases, ","))
 
@@ -1238,9 +1738,28 @@ func (c *Client) OfflineList(ctx context.Context, size int, nextPageToken string
 //   - 获取文件下载链接
 //   - 检查文件是否下载完成
 func (c *Client) OfflineFileInfo(ctx context.Context, fileID string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files/%s", APIHost, fileID)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files/" + fileID
 
 	return c.getJSON(ctx, URL, map[string]string{"thumbnail_size": "SIZE_LARGE"})
+}
+
+func (c *Client) DeleteOfflineTasks(ctx context.Context, taskIDs []string, deleteFiles bool) error {
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/tasks"
+	params := map[string]string{
+		"task_ids":     strings.Join(taskIDs, ","),
+		"delete_files": strconv.FormatBool(deleteFiles),
+	}
+
+	_, err := c.Delete(ctx, URL, params)
+	return err
 }
 
 // FileList 获取云端文件列表
@@ -1282,12 +1801,16 @@ func (c *Client) OfflineFileInfo(ctx context.Context, fileID string) (map[string
 //	if nextToken, ok := result["next_page_token"].(string); ok && nextToken != "" {
 //		nextResult, _ := cli.FileList(ctx, 100, "folder_id", nextToken)
 //	}
-func (c *Client) FileList(ctx context.Context, size int, parentID string, nextPageToken string) (map[string]interface{}, error) {
+func (c *Client) FileList(ctx context.Context, size int, parentID string, nextPageToken string, query string) (map[string]interface{}, error) {
 	if size == 0 {
 		size = 100
 	}
 
-	URL := fmt.Sprintf("https://%s/drive/v1/files", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files"
 
 	filters := `{"trashed":{"eq":false},"phase":{"eq":"PHASE_TYPE_COMPLETE"}}`
 
@@ -1301,6 +1824,10 @@ func (c *Client) FileList(ctx context.Context, size int, parentID string, nextPa
 
 	if nextPageToken != "" {
 		params["page_token"] = nextPageToken
+	}
+
+	if query != "" {
+		params["query"] = query
 	}
 
 	return c.getJSON(ctx, URL, params)
@@ -1333,7 +1860,11 @@ func (c *Client) Events(ctx context.Context, size int, nextPageToken string) (ma
 		size = 100
 	}
 
-	URL := fmt.Sprintf("https://%s/drive/v1/events", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/events"
 
 	params := map[string]string{
 		"thumbnail_size": "SIZE_MEDIUM",
@@ -1363,7 +1894,11 @@ func (c *Client) Events(ctx context.Context, size int, nextPageToken string) (ma
 //   - 离线下载任务失败后需要重新尝试
 //   - 网络问题导致的下载失败
 func (c *Client) OfflineTaskRetry(ctx context.Context, taskID string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/task", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/task"
 
 	data := map[string]interface{}{
 		"type":        "offline",
@@ -1402,7 +1937,11 @@ func (c *Client) OfflineTaskRetry(ctx context.Context, taskID string) (map[strin
 //		log.Fatal(err)
 //	}
 func (c *Client) DeleteTasks(ctx context.Context, taskIDs []string, deleteFiles bool) error {
-	URL := fmt.Sprintf("https://%s/drive/v1/tasks", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/tasks"
 
 	params := map[string]string{
 		"task_ids":     strings.Join(taskIDs, ","),
@@ -1477,7 +2016,11 @@ func (c *Client) GetTaskStatus(ctx context.Context, taskID string, fileID string
 //		log.Fatal(err)
 //	}
 func (c *Client) FileRename(ctx context.Context, fileID string, newName string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files/%s", APIHost, fileID)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files/" + fileID
 
 	data := map[string]interface{}{
 		"name": newName,
@@ -1537,7 +2080,11 @@ func (c *Client) FileRename(ctx context.Context, fileID string, newName string) 
 //   - FileBatchStar：收藏文件
 //   - FileBatchUnstar：取消收藏
 func (c *Client) FileBatchStar(ctx context.Context, ids []string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files:batchStar", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files:batchStar"
 
 	data := map[string]interface{}{
 		"ids": ids,
@@ -1558,7 +2105,11 @@ func (c *Client) FileBatchStar(ctx context.Context, ids []string) (map[string]in
 //   - map[string]interface{} 操作结果
 //   - error 错误信息
 func (c *Client) FileBatchUnstar(ctx context.Context, ids []string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files:batchUntrash", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files:batchUntrash"
 
 	data := map[string]interface{}{
 		"ids": ids,
@@ -1587,7 +2138,11 @@ func (c *Client) FileBatchUnstar(ctx context.Context, ids []string) (map[string]
 //	}
 //	files := result["files"].([]interface{})
 func (c *Client) FileStarList(ctx context.Context) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files"
 
 	filters := `{"starred":{"eq":true},"trashed":{"eq":false}}`
 
@@ -1629,7 +2184,11 @@ func (c *Client) FileStarList(ctx context.Context) (map[string]interface{}, erro
 //	shareURL := result["share_url"].(string)
 //	passcode := result["passcode"].(string)
 func (c *Client) FileBatchShare(ctx context.Context, ids []string, needPassword bool) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files:batchShare", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files:batchShare"
 
 	data := map[string]interface{}{
 		"ids": ids,
@@ -1669,7 +2228,11 @@ func (c *Client) FileBatchShare(ctx context.Context, ids []string, needPassword 
 //	usagePercent := used / total * 100
 //	fmt.Printf("存储使用率: %.2f%%\n", usagePercent)
 func (c *Client) GetQuotaInfo(ctx context.Context) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/about", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/about"
 
 	return c.getJSON(ctx, URL, nil)
 }
@@ -1693,7 +2256,11 @@ func (c *Client) GetQuotaInfo(ctx context.Context) (map[string]interface{}, erro
 //   - expiration_time: 过期时间
 //   - file_list: 分享的文件列表
 func (c *Client) GetShareInfo(ctx context.Context, shareURL string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/share/v1/info", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/share/v1/info"
 
 	params := map[string]string{
 		"share_url": shareURL,
@@ -1720,7 +2287,11 @@ func (c *Client) GetShareInfo(ctx context.Context, shareURL string) (map[string]
 //   - 将他人分享的文件保存到自己的云盘
 //   - 复制分享的文件到指定文件夹
 func (c *Client) Restore(ctx context.Context, shareID string, passCodeToken string, fileIDs []string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/share/v1/file/restore", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/share/v1/file/restore"
 
 	data := map[string]interface{}{
 		"share_id":         shareID,
@@ -1753,7 +2324,11 @@ func (c *Client) Restore(ctx context.Context, shareID string, passCodeToken stri
 //	}
 //	fmt.Println("下载地址:", downloadURL)
 func (c *Client) GetShareDownloadURL(ctx context.Context, shareURL string, fileID string) (string, error) {
-	URL := fmt.Sprintf("https://%s/share/v1/file", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/share/v1/file"
 
 	params := map[string]string{
 		"share_url": shareURL,
@@ -1852,7 +2427,11 @@ func (c *Client) Upload(ctx context.Context, filePath string, parentID string, f
 //
 // - 从内存上传
 func (c *Client) UploadReader(ctx context.Context, reader io.Reader, fileName string, parentID string) (map[string]interface{}, error) {
-	URL := fmt.Sprintf("https://%s/drive/v1/files", APIHost)
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://" + APIHost
+	}
+	URL := baseURL + "/drive/v1/files"
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
