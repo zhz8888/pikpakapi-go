@@ -434,6 +434,14 @@ func (c *Client) EncodeToken() error {
 	return nil
 }
 
+func (c *Client) GetEncodedToken() string {
+	return c.encodedToken
+}
+
+func (c *Client) SetEncodedToken(token string) {
+	c.encodedToken = token
+}
+
 // buildUserAgent 构建HTTP请求的User-Agent头
 //
 // 根据当前的验证码令牌状态选择合适的User-Agent
