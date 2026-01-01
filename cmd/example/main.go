@@ -289,6 +289,71 @@ func main() {
 		printJSON(restoreResult)
 	}
 
+	fmt.Println("\n=== 分享链接功能演示 ===")
+
+	var shareFileInfo *client.ShareFileInfo
+	var shareFileInfoWithPwd *client.ShareFileInfo
+	var shareFiles []*client.ShareFileInfo
+	var shareTranscodedURL string
+
+	fmt.Println("\n--- 获取分享链接文件信息 (无密码) ---")
+	shareFileInfo, err = cli.GetShareFileInfo(ctx, "https://pan.pikpak.com/share/link/xxxxxx", "")
+	if err != nil {
+		log.Printf("获取分享文件信息失败: %v", err)
+	} else {
+		fmt.Printf("文件名: %s\n", shareFileInfo.Name)
+		fmt.Printf("大小: %s\n", shareFileInfo.Size)
+		fmt.Printf("文件类型: %s\n", shareFileInfo.Kind)
+		if shareFileInfo.WebContentLink != "" {
+			fmt.Printf("Web下载链接: %s\n", shareFileInfo.WebContentLink)
+		}
+		if len(shareFileInfo.Medias) > 0 {
+			fmt.Printf("媒体数量: %d\n", len(shareFileInfo.Medias))
+			for i, media := range shareFileInfo.Medias {
+				fmt.Printf("  媒体%d: %s\n", i+1, media.MediaName)
+				fmt.Printf("    分辨率: %s\n", media.ResolutionName)
+				fmt.Printf("    视频: %dx%d\n", media.Video.Width, media.Video.Height)
+			}
+		}
+	}
+
+	fmt.Println("\n--- 获取分享链接文件信息 (有密码) ---")
+	shareFileInfoWithPwd, err = cli.GetShareFileInfo(ctx, "https://pan.pikpak.com/share/link/xxxxxx", "password123")
+	if err != nil {
+		log.Printf("获取分享文件信息失败: %v", err)
+	} else {
+		fmt.Printf("文件名: %s\n", shareFileInfoWithPwd.Name)
+		fmt.Printf("大小: %s\n", shareFileInfoWithPwd.Size)
+	}
+
+	fmt.Println("\n--- 获取分享文件下载链接 (原画) ---")
+	shareDownloadURL, err = cli.GetShareFileDownloadURL(ctx, "https://pan.pikpak.com/share/link/xxxxxx", "", false)
+	if err != nil {
+		log.Printf("获取分享下载链接失败: %v", err)
+	} else {
+		fmt.Printf("原画下载链接: %s\n", shareDownloadURL)
+	}
+
+	fmt.Println("\n--- 获取分享文件下载链接 (转码高清) ---")
+	shareTranscodedURL, err = cli.GetShareFileDownloadURL(ctx, "https://pan.pikpak.com/share/link/xxxxxx", "", true)
+	if err != nil {
+		log.Printf("获取转码下载链接失败: %v", err)
+	} else {
+		fmt.Printf("转码高清下载链接: %s\n", shareTranscodedURL)
+	}
+
+	fmt.Println("\n--- 获取分享链接文件列表 ---")
+	shareFiles, err = cli.GetShareFiles(ctx, "https://pan.pikpak.com/share/link/xxxxxx", "")
+	if err != nil {
+		log.Printf("获取分享文件列表失败: %v", err)
+	} else {
+		fmt.Printf("分享中包含 %d 个文件/文件夹:\n", len(shareFiles))
+		for i, file := range shareFiles {
+			isFolder := file.Kind == "drive#folder"
+			fmt.Printf("  %d. %s %s\n", i+1, file.Name, map[bool]string{true: "(文件夹)", false: ""}[isFolder])
+		}
+	}
+
 	fmt.Println("\n=== 令牌管理演示 ===")
 
 	fmt.Println("\n--- 编码令牌 (保存到配置文件) ---")

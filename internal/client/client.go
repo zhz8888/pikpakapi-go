@@ -2355,6 +2355,436 @@ func (c *Client) GetShareDownloadURL(ctx context.Context, shareURL string, fileI
 	return "", exception.NewPikpakException("download_url not found in response")
 }
 
+// ShareFileInfo 分享文件信息结构
+//
+// 包含从分享链接获取的文件详细信息
+type ShareFileInfo struct {
+	ID             string    `json:"id"`
+	ShareID        string    `json:"share_id"`
+	Kind           string    `json:"kind"`
+	Name           string    `json:"name"`
+	ModifiedTime   time.Time `json:"modified_time"`
+	Size           string    `json:"size"`
+	ThumbnailLink  string    `json:"thumbnail_link"`
+	WebContentLink string    `json:"web_content_link"`
+	Medias         []Media   `json:"medias"`
+}
+
+// Media 媒体信息结构
+//
+// 包含视频或其他媒体的详细信息
+type Media struct {
+	MediaId   string `json:"media_id"`
+	MediaName string `json:"media_name"`
+	Video     struct {
+		Height     int    `json:"height"`
+		Width      int    `json:"width"`
+		Duration   int    `json:"duration"`
+		BitRate    int    `json:"bit_rate"`
+		FrameRate  int    `json:"frame_rate"`
+		VideoCodec string `json:"video_codec"`
+		AudioCodec string `json:"audio_codec"`
+		VideoType  string `json:"video_type"`
+	} `json:"video"`
+	Link struct {
+		Url    string    `json:"url"`
+		Token  string    `json:"token"`
+		Expire time.Time `json:"expire"`
+	} `json:"link"`
+	NeedMoreQuota  bool          `json:"need_more_quota"`
+	VipTypes       []interface{} `json:"vip_types"`
+	RedirectLink   string        `json:"redirect_link"`
+	IconLink       string        `json:"icon_link"`
+	IsDefault      bool          `json:"is_default"`
+	Priority       int           `json:"priority"`
+	IsOrigin       bool          `json:"is_origin"`
+	ResolutionName string        `json:"resolution_name"`
+	IsVisible      bool          `json:"is_visible"`
+	Category       string        `json:"category"`
+}
+
+// GetShareFileInfo 获取分享链接的文件信息
+//
+// 通过分享链接获取文件的详细信息，包括文件名、大小、缩略图、媒体信息等
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - shareURL: string 分享链接
+//   - sharePassword: string 分享密码（如果有）
+//
+// 返回值：
+//   - *ShareFileInfo 文件信息
+//   - error 错误信息
+//
+// 使用示例：
+//
+//	info, err := cli.GetShareFileInfo(ctx, "https://pan.pikpak.com/share/link/xxx", "password")
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	fmt.Printf("文件名: %s\n", info.Name)
+//	fmt.Printf("大小: %s\n", info.Size)
+//	fmt.Printf("下载链接: %s\n", info.WebContentLink)
+func (c *Client) GetShareFileInfo(ctx context.Context, shareURL string, sharePassword string) (*ShareFileInfo, error) {
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://api-drive.mypikpak.com"
+	}
+
+	shareID, err := c.extractShareID(shareURL)
+	if err != nil {
+		return nil, err
+	}
+
+	params := map[string]string{
+		"share_id": shareID,
+	}
+
+	if sharePassword != "" {
+		passToken, passErr := c.getSharePassToken(ctx, shareID, sharePassword)
+		if passErr != nil {
+			return nil, passErr
+		}
+		params["pass_code_token"] = passToken
+	}
+
+	URL := baseURL + "/drive/v1/share/file_info"
+
+	result, err := c.getJSON(ctx, URL, params)
+	if err != nil {
+		return nil, err
+	}
+
+	fileInfo, ok := result["file_info"].(map[string]interface{})
+	if !ok {
+		return nil, exception.NewPikpakException("file_info not found in response")
+	}
+
+	return parseShareFileInfo(fileInfo)
+}
+
+// GetShareFileDownloadURL 获取分享文件的下载链接
+//
+// 通过分享链接获取文件的直接下载URL，支持选择原画或转码后的链接
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - shareURL: string 分享链接
+//   - sharePassword: string 分享密码（如果有）
+//   - useTranscoding: bool 是否使用转码后的链接（true则选择最高画质）
+//
+// 返回值：
+//   - string 下载链接
+//   - error 错误信息
+//
+// 使用示例：
+//
+//	// 获取原画链接
+//	url, err := cli.GetShareFileDownloadURL(ctx, "https://pan.pikpak.com/share/link/xxx", "", false)
+//
+//	// 获取转码后的高清链接
+//	url, err := cli.GetShareFileDownloadURL(ctx, "https://pan.pikpak.com/share/link/xxx", "", true)
+func (c *Client) GetShareFileDownloadURL(ctx context.Context, shareURL string, sharePassword string, useTranscoding bool) (string, error) {
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://api-drive.mypikpak.com"
+	}
+
+	shareID, err := c.extractShareID(shareURL)
+	if err != nil {
+		return "", err
+	}
+
+	params := map[string]string{
+		"share_id": shareID,
+	}
+
+	if sharePassword != "" {
+		passToken, passErr := c.getSharePassToken(ctx, shareID, sharePassword)
+		if passErr != nil {
+			return "", passErr
+		}
+		params["pass_code_token"] = passToken
+	}
+
+	URL := baseURL + "/drive/v1/share/file_info"
+
+	result, err := c.getJSON(ctx, URL, params)
+	if err != nil {
+		return "", err
+	}
+
+	fileInfo, ok := result["file_info"].(map[string]interface{})
+	if !ok {
+		return "", exception.NewPikpakException("file_info not found in response")
+	}
+
+	if webContentLink, hasWebContentLink := fileInfo["web_content_link"].(string); hasWebContentLink && webContentLink != "" && !useTranscoding {
+		return webContentLink, nil
+	}
+
+	medias, ok := fileInfo["medias"].([]interface{})
+	if !ok || len(medias) == 0 {
+		if webContentLink, hasWebContentLink := fileInfo["web_content_link"].(string); hasWebContentLink {
+			return webContentLink, nil
+		}
+		return "", exception.NewPikpakException("no download link available")
+	}
+
+	if useTranscoding && len(medias) > 1 {
+		for _, m := range medias {
+			media, mediaOk := m.(map[string]interface{})
+			if !mediaOk {
+				continue
+			}
+			link, linkOk := media["link"].(map[string]interface{})
+			if !linkOk {
+				continue
+			}
+			if url, urlOk := link["url"].(string); urlOk && url != "" {
+				return url, nil
+			}
+		}
+	}
+
+	firstMedia, mediaOk := medias[0].(map[string]interface{})
+	if !mediaOk {
+		return "", exception.NewPikpakException("invalid media format")
+	}
+
+	link, linkOk := firstMedia["link"].(map[string]interface{})
+	if !linkOk {
+		return "", exception.NewPikpakException("link not found in media")
+	}
+
+	if url, urlOk := link["url"].(string); urlOk {
+		return url, nil
+	}
+
+	return "", exception.NewPikpakException("download url not found")
+}
+
+// GetShareFiles 获取分享链接的文件列表
+//
+// 获取分享链接下的所有文件列表
+//
+// 参数说明：
+//   - ctx: context.Context 请求上下文
+//   - shareURL: string 分享链接
+//   - sharePassword: string 分享密码（如果有）
+//
+// 返回值：
+//   - []*ShareFileInfo 文件信息列表
+//   - error 错误信息
+//
+// 使用示例：
+//
+//	files, err := cli.GetShareFiles(ctx, "https://pan.pikpak.com/share/link/xxx", "password")
+//	for _, file := range files {
+//		fmt.Printf("%s - %s\n", file.Name, file.Size)
+//	}
+func (c *Client) GetShareFiles(ctx context.Context, shareURL string, sharePassword string) ([]*ShareFileInfo, error) {
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://api-drive.mypikpak.com"
+	}
+
+	shareID, err := c.extractShareID(shareURL)
+	if err != nil {
+		return nil, err
+	}
+
+	params := map[string]string{
+		"share_id":       shareID,
+		"thumbnail_size": "SIZE_LARGE",
+		"limit":          "100",
+	}
+
+	if sharePassword != "" {
+		passToken, passErr := c.getSharePassToken(ctx, shareID, sharePassword)
+		if passErr != nil {
+			return nil, passErr
+		}
+		params["pass_code_token"] = passToken
+	}
+
+	URL := baseURL + "/drive/v1/share/file_info"
+
+	result, err := c.getJSON(ctx, URL, params)
+	if err != nil {
+		return nil, err
+	}
+
+	var files []*ShareFileInfo
+
+	if filesArray, ok := result["files"].([]interface{}); ok {
+		for _, f := range filesArray {
+			fileMap, ok := f.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			fileInfo, parseErr := parseShareFileInfo(fileMap)
+			if parseErr != nil {
+				continue
+			}
+			files = append(files, fileInfo)
+		}
+	}
+
+	if len(files) == 0 {
+		if fileInfo, ok := result["file_info"].(map[string]interface{}); ok {
+			singleFile, parseErr := parseShareFileInfo(fileInfo)
+			if parseErr == nil {
+				files = append(files, singleFile)
+			}
+		}
+	}
+
+	return files, nil
+}
+
+// extractShareID 从分享链接中提取分享ID
+func (c *Client) extractShareID(shareURL string) (string, error) {
+	patterns := []string{
+		`/s/([a-zA-Z0-9]+)`,
+		`share/([a-zA-Z0-9]+)`,
+		`id=([a-zA-Z0-9]+)`,
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindStringSubmatch(shareURL)
+		if len(matches) > 1 {
+			return matches[1], nil
+		}
+	}
+
+	return "", exception.NewPikpakException("invalid share URL format")
+}
+
+// getSharePassToken 获取分享密码令牌
+func (c *Client) getSharePassToken(ctx context.Context, shareID string, sharePassword string) (string, error) {
+	baseURL := c.baseURL
+	if baseURL == "" {
+		baseURL = "https://api-drive.mypikpak.com"
+	}
+
+	URL := baseURL + "/share/v1/pass_token"
+
+	data := map[string]interface{}{
+		"share_id":       shareID,
+		"pass_code":      sharePassword,
+		"thumbnail_size": "SIZE_LARGE",
+		"limit":          100,
+	}
+
+	result, err := c.postJSON(ctx, URL, data)
+	if err != nil {
+		return "", err
+	}
+
+	if passCodeToken, ok := result["pass_code_token"].(string); ok {
+		return passCodeToken, nil
+	}
+
+	return "", exception.NewPikpakException("pass_code_token not found in response")
+}
+
+// parseShareFileInfo 解析分享文件信息
+func parseShareFileInfo(data map[string]interface{}) (*ShareFileInfo, error) {
+	info := &ShareFileInfo{}
+
+	if id, ok := data["id"].(string); ok {
+		info.ID = id
+	}
+	if shareID, ok := data["share_id"].(string); ok {
+		info.ShareID = shareID
+	}
+	if kind, ok := data["kind"].(string); ok {
+		info.Kind = kind
+	}
+	if name, ok := data["name"].(string); ok {
+		info.Name = name
+	}
+	if size, ok := data["size"].(string); ok {
+		info.Size = size
+	}
+	if thumbnailLink, ok := data["thumbnail_link"].(string); ok {
+		info.ThumbnailLink = thumbnailLink
+	}
+	if webContentLink, ok := data["web_content_link"].(string); ok {
+		info.WebContentLink = webContentLink
+	}
+
+	if modifiedTimeStr, ok := data["modified_time"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, modifiedTimeStr); err == nil {
+			info.ModifiedTime = t
+		}
+	}
+
+	if mediasArray, ok := data["medias"].([]interface{}); ok {
+		for _, m := range mediasArray {
+			mediaMap, ok := m.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			media := Media{}
+
+			if mediaId, ok := mediaMap["media_id"].(string); ok {
+				media.MediaId = mediaId
+			}
+			if mediaName, ok := mediaMap["media_name"].(string); ok {
+				media.MediaName = mediaName
+			}
+
+			if linkMap, ok := mediaMap["link"].(map[string]interface{}); ok {
+				if url, ok := linkMap["url"].(string); ok {
+					media.Link.Url = url
+				}
+				if token, ok := linkMap["token"].(string); ok {
+					media.Link.Token = token
+				}
+				if expireStr, ok := linkMap["expire"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, expireStr); err == nil {
+						media.Link.Expire = t
+					}
+				}
+			}
+
+			if videoMap, ok := mediaMap["video"].(map[string]interface{}); ok {
+				if height, ok := videoMap["height"].(float64); ok {
+					media.Video.Height = int(height)
+				}
+				if width, ok := videoMap["width"].(float64); ok {
+					media.Video.Width = int(width)
+				}
+				if duration, ok := videoMap["duration"].(float64); ok {
+					media.Video.Duration = int(duration)
+				}
+				if bitRate, ok := videoMap["bit_rate"].(float64); ok {
+					media.Video.BitRate = int(bitRate)
+				}
+				if frameRate, ok := videoMap["frame_rate"].(float64); ok {
+					media.Video.FrameRate = int(frameRate)
+				}
+				if videoCodec, ok := videoMap["video_codec"].(string); ok {
+					media.Video.VideoCodec = videoCodec
+				}
+				if audioCodec, ok := videoMap["audio_codec"].(string); ok {
+					media.Video.AudioCodec = audioCodec
+				}
+				if videoType, ok := videoMap["video_type"].(string); ok {
+					media.Video.VideoType = videoType
+				}
+			}
+
+			info.Medias = append(info.Medias, media)
+		}
+	}
+
+	return info, nil
+}
+
 // CreateShareLink 创建分享链接
 //
 // 为单个文件创建分享链接
@@ -2449,16 +2879,16 @@ func (c *Client) UploadReader(ctx context.Context, reader io.Reader, fileName st
 		return nil, exception.NewPikpakExceptionWithError("failed to create form file", err)
 	}
 
-	if _, err := io.Copy(part, reader); err != nil {
-		return nil, exception.NewPikpakExceptionWithError("failed to copy file data", err)
+	if _, copyErr := io.Copy(part, reader); copyErr != nil {
+		return nil, exception.NewPikpakExceptionWithError("failed to copy file data", copyErr)
 	}
 
 	writer.WriteField("kind", "drive#file")
 	writer.WriteField("name", fileName)
 	writer.WriteField("parent_id", parentID)
 
-	if err := writer.Close(); err != nil {
-		return nil, exception.NewPikpakExceptionWithError("failed to close writer", err)
+	if closeErr := writer.Close(); closeErr != nil {
+		return nil, exception.NewPikpakExceptionWithError("failed to close writer", closeErr)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, URL, body)

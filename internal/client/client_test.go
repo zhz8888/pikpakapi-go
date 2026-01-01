@@ -1712,3 +1712,784 @@ func TestDownloadStatus_Check(t *testing.T) {
 		})
 	}
 }
+
+func TestEncodeToken_Success(t *testing.T) {
+	cli := NewClient()
+	cli.accessToken = "test_access_token"
+	cli.refreshToken = "test_refresh_token"
+
+	err := cli.EncodeToken()
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if cli.encodedToken == "" {
+		t.Error("Expected encodedToken to be set")
+	}
+
+	expected := "eyJhY2Nlc3NfdG9rZW4iOiJ0ZXN0X2FjY2Vzc190b2tlbiIsInJlZnJlc2hfdG9rZW4iOiJ0ZXN0X3JlZnJlc2hfdG9rZW4ifQ=="
+	if cli.encodedToken != expected {
+		t.Errorf("Expected encodedToken '%s', got '%s'", expected, cli.encodedToken)
+	}
+}
+
+func TestEncodeToken_EmptyTokens(t *testing.T) {
+	cli := NewClient()
+
+	err := cli.EncodeToken()
+	if err != nil {
+		t.Errorf("Expected no error when tokens are empty, got %v", err)
+	}
+
+	expected := "eyJhY2Nlc3NfdG9rZW4iOiIiLCJyZWZyZXNoX3Rva2VuIjoiIn0="
+	if cli.encodedToken != expected {
+		t.Errorf("Expected encodedToken '%s', got '%s'", expected, cli.encodedToken)
+	}
+}
+
+func TestDecodeToken_Success(t *testing.T) {
+	cli := NewClient()
+	cli.encodedToken = "eyJhY2Nlc3NfdG9rZW4iOiJ0ZXN0X2FjY2Vzc190b2tlbiIsInJlZnJlc2hfdG9rZW4iOiJ0ZXN0X3JlZnJlc2hfdG9rZW4ifQ=="
+
+	err := cli.DecodeToken()
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if cli.accessToken != "test_access_token" {
+		t.Errorf("Expected accessToken 'test_access_token', got '%s'", cli.accessToken)
+	}
+
+	if cli.refreshToken != "test_refresh_token" {
+		t.Errorf("Expected refreshToken 'test_refresh_token', got '%s'", cli.refreshToken)
+	}
+}
+
+func TestDecodeToken_EmptyToken(t *testing.T) {
+	cli := NewClient()
+
+	err := cli.DecodeToken()
+	if err == nil {
+		t.Error("Expected error when encodedToken is empty")
+	}
+}
+
+func TestDecodeToken_InvalidToken(t *testing.T) {
+	cli := NewClient()
+	cli.encodedToken = "invalid_base64_token!!!"
+
+	err := cli.DecodeToken()
+	if err == nil {
+		t.Error("Expected error for invalid token")
+	}
+}
+
+func TestGetEncodedToken(t *testing.T) {
+	cli := NewClient()
+	cli.encodedToken = "test_encoded_token"
+
+	token := cli.GetEncodedToken()
+	if token != "test_encoded_token" {
+		t.Errorf("Expected 'test_encoded_token', got '%s'", token)
+	}
+}
+
+func TestSetEncodedToken(t *testing.T) {
+	cli := NewClient()
+
+	cli.SetEncodedToken("new_encoded_token")
+	if cli.encodedToken != "new_encoded_token" {
+		t.Errorf("Expected 'new_encoded_token', got '%s'", cli.encodedToken)
+	}
+}
+
+func TestDeleteToTrash_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files:batchTrash"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		ids, ok := body["ids"].([]interface{})
+		if !ok || len(ids) != 2 {
+			t.Error("Expected ids to contain 2 items")
+		}
+
+		response := map[string]interface{}{
+			"code": "OK",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.DeleteToTrash(context.Background(), []string{"file1", "file2"})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestDeleteToTrash_EmptyIDs(t *testing.T) {
+	cli := NewClient(WithAccessToken("test_token"))
+
+	_, err := cli.DeleteToTrash(context.Background(), []string{})
+	if err == nil {
+		t.Error("Expected error when ids are empty")
+	}
+}
+
+func TestUntrash_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files:batchUntrash"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		ids, ok := body["ids"].([]interface{})
+		if !ok || len(ids) != 1 {
+			t.Error("Expected ids to contain 1 item")
+		}
+
+		response := map[string]interface{}{
+			"code": "OK",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.Untrash(context.Background(), []string{"file_id"})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestDeleteForever_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files:batchDelete"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		ids, ok := body["ids"].([]interface{})
+		if !ok || len(ids) != 1 {
+			t.Error("Expected ids to contain 1 item")
+		}
+
+		response := map[string]interface{}{
+			"code": "OK",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.DeleteForever(context.Background(), []string{"file_id"})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestOfflineDownload_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		if body["name"] != "test_download" {
+			t.Error("Expected name to be 'test_download'")
+		}
+
+		urlObj, ok := body["url"].(map[string]interface{})
+		if !ok {
+			t.Error("Expected url to be an object")
+		} else if urlObj["url"] != "magnet:xxx" {
+			t.Error("Expected url.url to be 'magnet:xxx'")
+		}
+
+		response := map[string]interface{}{
+			"id":     "task_123",
+			"name":   "test_download",
+			"status": "not_downloading",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.OfflineDownload(context.Background(), "magnet:xxx", "", "test_download")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+
+	if result["id"] != "task_123" {
+		t.Errorf("Expected id 'task_123', got '%v'", result["id"])
+	}
+}
+
+func TestOfflineDownload_EmptyURL(t *testing.T) {
+	cli := NewClient(WithAccessToken("test_token"))
+
+	_, err := cli.OfflineDownload(context.Background(), "", "", "test")
+	if err == nil {
+		t.Error("Expected error when url is empty")
+	}
+}
+
+func TestOfflineList_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Expected GET method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/tasks"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		response := map[string]interface{}{
+			"tasks": []interface{}{
+				map[string]interface{}{
+					"task_id": "task_1",
+					"status":  "done",
+				},
+			},
+			"next_page_token": "next_token",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.OfflineList(context.Background(), 20, "", nil)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestDeleteOfflineTasks_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("Expected DELETE method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/tasks"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		if r.URL.Query().Get("task_ids") != "task1,task2" {
+			t.Error("Expected task_ids to be 'task1,task2'")
+		}
+
+		if r.URL.Query().Get("delete_files") != "false" {
+			t.Error("Expected delete_files to be 'false'")
+		}
+
+		response := map[string]interface{}{
+			"code": "OK",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	err := cli.DeleteOfflineTasks(context.Background(), []string{"task1", "task2"}, false)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+}
+
+func TestGetTaskStatus_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Expected GET method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files/"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		response := map[string]interface{}{
+			"task_id": "task_123",
+			"status":  "not_found",
+			"file_id": "file_456",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	status, err := cli.GetTaskStatus(context.Background(), "task_123", "")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if status != enums.DownloadStatusNotFound {
+		t.Errorf("Expected status 'not_found', got '%s'", status)
+	}
+}
+
+func TestFileBatchStar_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files:batchStar"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		ids, ok := body["ids"].([]interface{})
+		if !ok || len(ids) != 1 {
+			t.Error("Expected ids to contain 1 item")
+		}
+
+		response := map[string]interface{}{
+			"code": "OK",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.FileBatchStar(context.Background(), []string{"file_id"})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestFileBatchUnstar_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files:batchUntrash"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		ids, ok := body["ids"].([]interface{})
+		if !ok || len(ids) != 1 {
+			t.Error("Expected ids to contain 1 item")
+		}
+
+		response := map[string]interface{}{
+			"code": "OK",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.FileBatchUnstar(context.Background(), []string{"file_id"})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestFileStarList_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Expected GET method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		if r.URL.Query().Get("thumbnail_size") != "SIZE_MEDIUM" {
+			t.Error("Expected thumbnail_size to be 'SIZE_MEDIUM'")
+		}
+
+		response := map[string]interface{}{
+			"files": []interface{}{
+				map[string]interface{}{
+					"id":   "file_1",
+					"name": "starred_file",
+				},
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.FileStarList(context.Background())
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestFileRename_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("Expected PATCH method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files/file_id"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		if body["name"] != "new_name" {
+			t.Errorf("Expected name 'new_name', got '%v'", body["name"])
+		}
+
+		response := map[string]interface{}{
+			"id":   "file_id",
+			"name": "new_name",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.FileRename(context.Background(), "file_id", "new_name")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestGetShareInfo_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Expected GET method, got %s", r.Method)
+		}
+
+		expectedPath := "/share/v1/info"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		if r.URL.Query().Get("share_url") != "https://my.pikpak.com/share/share_123" {
+			t.Error("Expected share_url to be 'https://my.pikpak.com/share/share_123'")
+		}
+
+		response := map[string]interface{}{
+			"share_id":    "share_123",
+			"share_token": "token_abc",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.GetShareInfo(context.Background(), "https://my.pikpak.com/share/share_123")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestCreateShareLink_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/files:batchShare"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		ids, ok := body["ids"].([]interface{})
+		if !ok || len(ids) != 1 {
+			t.Error("Expected ids to contain 1 item")
+		}
+
+		response := map[string]interface{}{
+			"share_info": map[string]interface{}{
+				"id":    "share_123",
+				"url":   "https://my.pikpak.com/s/share_123",
+				"token": "share_token_xyz",
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.CreateShareLink(context.Background(), "file_123", false)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestGetShareDownloadURL_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Expected GET method, got %s", r.Method)
+		}
+
+		expectedPath := "/share/v1/file"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		if r.URL.Query().Get("share_url") != "https://my.pikpak.com/s/share_123" {
+			t.Error("Expected share_url to be 'https://my.pikpak.com/s/share_123'")
+		}
+
+		if r.URL.Query().Get("file_id") != "file_456" {
+			t.Error("Expected file_id to be 'file_456'")
+		}
+
+		response := map[string]interface{}{
+			"download_url": "https://download.example.com/file",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	url, err := cli.GetShareDownloadURL(context.Background(), "https://my.pikpak.com/s/share_123", "file_456")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if url != "https://download.example.com/file" {
+		t.Errorf("Expected download URL, got '%s'", url)
+	}
+}
+
+func TestRestore_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		expectedPath := "/share/v1/file/restore"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		if body["share_id"] != "share_123" {
+			t.Error("Expected share_id to be 'share_123'")
+		}
+
+		response := map[string]interface{}{
+			"file_ids": []string{"restored_file_1"},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.Restore(context.Background(), "share_123", "pass_token", []string{"file_1"})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestGetQuotaInfo_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Expected GET method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/about"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		response := map[string]interface{}{
+			"total_capacity": "107374182400",
+			"used_capacity":  "53687091200",
+			"trash_capacity": "1073741824",
+			"is_vip":         true,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.GetQuotaInfo(context.Background())
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
+
+func TestEvents_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Expected GET method, got %s", r.Method)
+		}
+
+		expectedPath := "/drive/v1/events"
+		if r.URL.Path != expectedPath {
+			t.Errorf("Expected path '%s', got '%s'", expectedPath, r.URL.Path)
+		}
+
+		response := map[string]interface{}{
+			"events": []interface{}{
+				map[string]interface{}{
+					"event_id": "event_1",
+					"type":     "file_created",
+				},
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	cli := NewClient(WithBaseURL(server.URL), WithAccessToken("test_token"))
+
+	result, err := cli.Events(context.Background(), 50, "")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected result to be non-nil")
+	}
+}
